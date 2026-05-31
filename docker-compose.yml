@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: habitforge_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-habitforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-habitforge_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-habitforge}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-habitforge} -d ${POSTGRES_DB:-habitforge}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  postgres_data:
+    name: habitforge_postgres_data
