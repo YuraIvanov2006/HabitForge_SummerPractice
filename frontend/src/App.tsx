@@ -13,6 +13,191 @@ import './App.css';
 // ── Configuration ────────────────────────────────────────────────────────────
 const API_BASE = "http://127.0.0.1:8000";
 
+const WEEKDAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+const WEEKDAY_UA: Record<string, string> = {
+  Mon: "Пн", Tue: "Вт", Wed: "Ср", Thu: "Чт", Fri: "Пт", Sat: "Сб", Sun: "Нд",
+};
+
+function formatLocalDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function parseLocalDate(iso: string): Date {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function addDays(d: Date, days: number): Date {
+  const next = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+type HeatmapRange = "week" | "month" | "6months";
+
+const HEATMAP_RANGE_CONFIG: Record<HeatmapRange, { days: number; label: string; shortLabel: string }> = {
+  week: { days: 7, label: "Тиждень", shortLabel: "7 дн." },
+  month: { days: 30, label: "Місяць", shortLabel: "30 дн." },
+  "6months": { days: 182, label: "6 місяців", shortLabel: "6 міс." },
+};
+
+const HEATMAP_DAY_LABELS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
+const HEATMAP_MONTH_LABELS = ["Січ", "Лют", "Бер", "Кві", "Тра", "Чер", "Лип", "Сер", "Вер", "Жов", "Лис", "Гру"];
+
+interface HeatmapCell {
+  date: string | null;
+  intensity: number;
+  completions: number;
+  variant: "active" | "padding" | "future";
+}
+
+interface HeatmapModel {
+  cells: HeatmapCell[];
+  weekCount: number;
+  monthLabels: { label: string; column: number }[];
+  startDate: string;
+  endDate: string;
+  totalCompletions: number;
+  activeDays: number;
+}
+
+function buildHeatmapModel(
+  dateCounts: Record<string, number>,
+  endDateStr: string,
+  range: HeatmapRange,
+): HeatmapModel {
+  const endDate = parseLocalDate(endDateStr);
+  const rangeDays = HEATMAP_RANGE_CONFIG[range].days;
+  const startDate = addDays(endDate, -(rangeDays - 1));
+  const startDateStr = formatLocalDate(startDate);
+
+  const countsInRange: number[] = [];
+  Object.entries(dateCounts).forEach(([date, count]) => {
+    if (date >= startDateStr && date <= endDateStr) {
+      countsInRange.push(count);
+    }
+  });
+  const maxCount = Math.max(...countsInRange, 1);
+
+  const makeActiveCell = (dateStr: string): HeatmapCell => {
+    const completions = dateCounts[dateStr] || 0;
+    let intensity = 0;
+    if (completions > 0) {
+      intensity =
+        maxCount <= 4
+          ? Math.min(4, completions)
+          : Math.min(4, Math.max(1, Math.round((completions / maxCount) * 4)));
+    }
+    return { date: dateStr, intensity, completions, variant: "active" };
+  };
+
+  let cells: HeatmapCell[] = [];
+  let totalCompletions = 0;
+  let activeDays = 0;
+
+  if (range === "week") {
+    for (let i = 0; i < 7; i += 1) {
+      const cursor = addDays(startDate, i);
+      const dateStr = formatLocalDate(cursor);
+      const cell = makeActiveCell(dateStr);
+      totalCompletions += cell.completions;
+      if (cell.completions > 0) activeDays += 1;
+      cells.push(cell);
+    }
+    return {
+      cells,
+      weekCount: 1,
+      monthLabels: [],
+      startDate: startDateStr,
+      endDate: endDateStr,
+      totalCompletions,
+      activeDays,
+    };
+  }
+
+  const startDay = startDate.getDay();
+  const mondayOffset = startDay === 0 ? -6 : 1 - startDay;
+  const gridStart = addDays(startDate, mondayOffset);
+
+  const endDay = endDate.getDay();
+  const sundayOffset = endDay === 0 ? 0 : 7 - endDay;
+  const gridEnd = addDays(endDate, sundayOffset);
+
+  for (let cursor = gridStart; cursor <= gridEnd; cursor = addDays(cursor, 1)) {
+    const dateStr = formatLocalDate(cursor);
+    const inRange = dateStr >= startDateStr && dateStr <= endDateStr;
+    const isFuture = dateStr > endDateStr;
+
+    if (inRange) {
+      const cell = makeActiveCell(dateStr);
+      totalCompletions += cell.completions;
+      if (cell.completions > 0) activeDays += 1;
+      cells.push(cell);
+    } else if (isFuture) {
+      cells.push({ date: dateStr, intensity: 0, completions: 0, variant: "future" });
+    } else {
+      cells.push({ date: null, intensity: 0, completions: 0, variant: "padding" });
+    }
+  }
+
+  const weekCount = Math.ceil(cells.length / 7);
+  const monthLabels: { label: string; column: number }[] = [];
+  let lastMonth = -1;
+
+  for (let col = 0; col < weekCount; col += 1) {
+    for (let row = 0; row < 7; row += 1) {
+      const cell = cells[col * 7 + row];
+      if (!cell?.date) continue;
+      const month = parseLocalDate(cell.date).getMonth();
+      if (month !== lastMonth) {
+        monthLabels.push({ label: HEATMAP_MONTH_LABELS[month], column: col });
+        lastMonth = month;
+        break;
+      }
+    }
+  }
+
+  return {
+    cells,
+    weekCount,
+    monthLabels,
+    startDate: startDateStr,
+    endDate: endDateStr,
+    totalCompletions,
+    activeDays,
+  };
+}
+
+function parseApiError(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const fieldLabels: Record<string, string> = {
+      password: "Пароль",
+      username: "Ім'я користувача",
+      email: "Email",
+    };
+    return detail
+      .map((item: { msg?: string; loc?: (string | number)[] }) => {
+        const field = String(item.loc?.slice(-1)[0] ?? "поле");
+        const label = fieldLabels[field] ?? field;
+        return `${label}: ${item.msg ?? "невалідне значення"}`;
+      })
+      .join(". ");
+  }
+  return "Помилка сервера. Спробуйте пізніше.";
+}
+
+function categoryLabel(cat: string): string {
+  if (cat === "study") return "📚 Навчання";
+  if (cat === "sport") return "🏃 Спорт";
+  if (cat === "sleep") return "😴 Сон";
+  if (cat === "nutrition") return "🍎 Харчування";
+  return "🧩 Інше";
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 interface User {
   id: number;
@@ -39,10 +224,27 @@ interface HabitLog {
 }
 
 interface WeeklyReport {
+  habit_counts: { total: number; daily: number; weekly: number };
+  completed_this_week: number;
+  average_streak: number;
+  longest_streak: number;
+  completions_by_day: Record<string, number>;
+  upcoming_due_dates: {
+    habit_id: number;
+    title: string;
+    due_date: string;
+    frequency: string;
+  }[];
   this_week_completions: number;
   last_week_completions: number;
   growth_rate: number;
   message: string;
+}
+
+interface ChartData {
+  completion_time_series: { date: string; count: number }[];
+  category_bar: { category: string; xp: number }[];
+  weekly_comparison: { week: string; completions: number }[];
 }
 
 interface Stats {
@@ -58,6 +260,7 @@ interface Stats {
   completion_rate: number;
   category_stats: Record<string, number>;
   weekly_report: WeeklyReport;
+  chart_data: ChartData;
 }
 
 interface FloatingXP {
@@ -68,45 +271,6 @@ interface FloatingXP {
 }
 
 // ── Custom SVG Icons ─────────────────────────────────────────────────────────
-const BookIcon = () => (
-  <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2.2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-  </svg>
-);
-
-const SportIcon = () => (
-  <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2.2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="18" cy="5" r="1" />
-    <path d="M4 9h5l1.5 2 1.5-2.5L10 6h4" />
-    <path d="M12 10v4l-2 3" />
-    <path d="M14 14l2 3" />
-    <path d="M8 15h3.5" />
-  </svg>
-);
-
-const SleepIcon = () => (
-  <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2.2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-  </svg>
-);
-
-const NutritionIcon = () => (
-  <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2.2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z" />
-    <path d="M12 6V2" />
-    <path d="M12 6c0 2 1.5 3 3.5 3" />
-  </svg>
-);
-
-const OtherIcon = () => (
-  <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2.2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-    <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
-    <line x1="12" y1="22.08" x2="12" y2="12" />
-  </svg>
-);
-
 const PlusIcon = () => (
   <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
     <line x1="12" y1="5" x2="12" y2="19" />
@@ -171,6 +335,9 @@ export default function App() {
   const [habits, setHabits] = useState<Habit[]>([]);
   const [habitLogs, setHabitLogs] = useState<Record<number, HabitLog[]>>({});
   const [stats, setStats] = useState<Stats | null>(null);
+  const [effectiveDate, setEffectiveDate] = useState<string>(() => formatLocalDate(new Date()));
+  const [dateOverridden, setDateOverridden] = useState(false);
+  const [devDateInput, setDevDateInput] = useState("");
   
   // Navigation & Filtering
   const [activeTab, setActiveTab] = useState<'dashboard' | 'analytics' | 'about'>('dashboard');
@@ -180,6 +347,7 @@ export default function App() {
   const [showHabitModal, setShowHabitModal] = useState(false);
   const [editingHabit, setEditingHabit] = useState<Habit | null>(null);
   const [showWeeklyReport, setShowWeeklyReport] = useState(false);
+  const [heatmapRange, setHeatmapRange] = useState<HeatmapRange>("6months");
   
   // Form States
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
@@ -221,6 +389,20 @@ export default function App() {
     }
     return response;
   }, [token]);
+
+  const fetchEffectiveDate = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/util/date`);
+      if (res.ok) {
+        const data = await res.json();
+        setEffectiveDate(data.date);
+        setDateOverridden(data.is_overridden);
+        setDevDateInput(data.date);
+      }
+    } catch {
+      setEffectiveDate(formatLocalDate(new Date()));
+    }
+  }, []);
 
   const loadProfile = useCallback(async () => {
     try {
@@ -277,6 +459,7 @@ export default function App() {
   // Load user info on mount/token change
   useEffect(() => {
     if (token) {
+      fetchEffectiveDate();
       loadProfile();
       loadData();
     }
@@ -298,8 +481,8 @@ export default function App() {
           })
         });
         if (!res.ok) {
-          const detail = await res.json();
-          throw new Error(detail.detail || "Помилка при реєстрації");
+          const body = await res.json();
+          throw new Error(parseApiError(body.detail));
         }
         // Redirect to login automatically
         setAuthMode('login');
@@ -316,12 +499,13 @@ export default function App() {
           body: params
         });
         if (!res.ok) {
-          const detail = await res.json();
-          throw new Error(detail.detail || "Невірний email або пароль");
+          const body = await res.json();
+          throw new Error(parseApiError(body.detail) || "Невірний email або пароль");
         }
         const data = await res.json();
         localStorage.setItem('access_token', data.access_token);
         setToken(data.access_token);
+        fetchEffectiveDate();
         triggerToast("Вхід виконано! Ласкаво просимо в HabitForge.", "success");
       }
     } catch (err: any) {
@@ -336,7 +520,36 @@ export default function App() {
     setHabits([]);
     setHabitLogs({});
     setStats(null);
+    setDateOverridden(false);
+    setEffectiveDate(formatLocalDate(new Date()));
     triggerToast("Ви вийшли з акаунта.", "info");
+  };
+
+  const handleDateOverride = async (dateValue: string | null) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/util/date`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: dateValue }),
+      });
+      if (!res.ok) {
+        const body = await res.json();
+        throw new Error(parseApiError(body.detail));
+      }
+      const data = await res.json();
+      setEffectiveDate(data.date);
+      setDateOverridden(data.is_overridden);
+      setDevDateInput(data.date);
+      await loadData();
+      triggerToast(
+        data.is_overridden
+          ? `Віртуальна дата: ${data.date}`
+          : "Дату скинуто до реальної",
+        "info"
+      );
+    } catch (err: any) {
+      triggerToast(err.message || "Не вдалося змінити дату", "error");
+    }
   };
 
   // ── Feedback Animations ─────────────────────────────────────────────────────
@@ -358,7 +571,7 @@ export default function App() {
 
   // ── Habit Execution Completion Toggles ──────────────────────────────────────
   const toggleHabitCompletion = async (habit: Habit, e: React.MouseEvent) => {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = effectiveDate;
     const logs = habitLogs[habit.id] || [];
     const todayLog = logs.find((l) => l.execution_date === todayStr);
     const wasCompleted = todayLog ? todayLog.is_completed : false;
@@ -484,66 +697,24 @@ export default function App() {
 
   // Check if habit is completed today
   const isHabitCompletedToday = (habitId: number) => {
-    const todayStr = new Date().toISOString().split('T')[0];
     const logs = habitLogs[habitId] || [];
-    return logs.some((l) => l.execution_date === todayStr && l.is_completed);
+    return logs.some((l) => l.execution_date === effectiveDate && l.is_completed);
   };
 
-  // ── Render Heatmap Grid Cells ───────────────────────────────────────────────
-  const heatmapData = useMemo(() => {
-    const cells = [];
-    const today = new Date();
-    // We compute a 26-week calendar (half a year) to look tidy
-    const totalDays = 26 * 7;
-    
-    // Find the starting Sunday of 26 weeks ago
-    const startDate = new Date();
-    startDate.setDate(today.getDate() - totalDays);
-    const startOffset = startDate.getDay(); // 0 is Sunday
-    startDate.setDate(startDate.getDate() - startOffset);
-
-    // Collect all unique completion dates for active filter mode
-    const allCompletionDates: string[] = [];
+  // ── Heatmap (GitHub-style, Mon–Sun columns, local dates) ───────────────────
+  const heatmapModel = useMemo((): HeatmapModel => {
+    const dateCounts: Record<string, number> = {};
     habits.forEach((habit) => {
       if (focusMode !== "all" && habit.category !== focusMode) return;
       const logs = habitLogs[habit.id] || [];
       logs.forEach((log) => {
         if (log.is_completed) {
-          allCompletionDates.push(log.execution_date);
+          dateCounts[log.execution_date] = (dateCounts[log.execution_date] || 0) + 1;
         }
       });
     });
-
-    // Count completions per date
-    const dateCounts: Record<string, number> = {};
-    allCompletionDates.forEach((d) => {
-      dateCounts[d] = (dateCounts[d] || 0) + 1;
-    });
-
-    for (let i = 0; i < totalDays + startOffset; i++) {
-      const cellDate = new Date(startDate);
-      cellDate.setDate(startDate.getDate() + i);
-      const dateStr = cellDate.toISOString().split('T')[0];
-      const count = dateCounts[dateStr] || 0;
-      
-      cells.push({
-        date: dateStr,
-        count: count > 4 ? 4 : count,
-        completions: count,
-        dayOfWeek: cellDate.getDay()
-      });
-    }
-    return cells;
-  }, [habits, habitLogs, focusMode]);
-
-  // ── Analytical SVG Bar Charts ───────────────────────────────────────────────
-  const activeStatsCount = useMemo(() => {
-    if (!stats) return { total: 0, completions: 0 };
-    return {
-      total: stats.habits_count,
-      completions: stats.completions_count
-    };
-  }, [stats]);
+    return buildHeatmapModel(dateCounts, effectiveDate, heatmapRange);
+  }, [habits, habitLogs, focusMode, effectiveDate, heatmapRange]);
 
   // ── Render SVG Progress Tree ────────────────────────────────────────────────
   const renderEcosystemTree = () => {
@@ -779,10 +950,15 @@ export default function App() {
                 type="password" 
                 className="form-input" 
                 required
+                minLength={authMode === 'register' ? 8 : undefined}
+                maxLength={authMode === 'register' ? 128 : undefined}
                 placeholder="••••••••"
                 value={authForm.password}
                 onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })}
               />
+              {authMode === 'register' && (
+                <p className="form-hint">8–128 символів. Літери, цифри та спецсимволи дозволені.</p>
+              )}
             </div>
 
             <button type="submit" className="primary-btn" style={{ width: '100%', justifyContent: 'center', padding: '14px' }}>
@@ -879,7 +1055,12 @@ export default function App() {
             <header className="dashboard-header">
               <div className="dashboard-title">
                 <h1>Мій Простір Звичок</h1>
-                <p>Вітаємо назад! Слідкуйте за своїми щоденними рутинами.</p>
+                <p>
+                  Вітаємо назад! Слідкуйте за своїми щоденними рутинами.
+                  {dateOverridden && (
+                    <span className="date-override-badge"> 📅 Тестова дата: {effectiveDate}</span>
+                  )}
+                </p>
               </div>
 
               {/* Mode Selector */}
@@ -963,39 +1144,99 @@ export default function App() {
             <div className="dashboard-grid">
               
               {/* LEFT COLUMN: Heatmap + Habits List */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '30px' }}>
+              <div className="dashboard-column">
                 
                 {/* Heatmap Card */}
-                <div className="card">
-                  <div className="card-title">
-                    <span>Теплова Карта Активності ({focusMode === 'all' ? 'Всі звички' : `Фокус: ${focusMode}`})</span>
-                    <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)' }}>За останні 6 місяців</span>
-                  </div>
-                  
-                  <div className="heatmap-scroll-container">
-                    <div className="heatmap-grid">
-                      {heatmapData.map((cell, idx) => (
-                        <div 
-                          key={idx} 
-                          className="heatmap-cell" 
-                          data-count={cell.count}
+                <div className="card heatmap-card">
+                  <div className="heatmap-card-header">
+                    <div className="heatmap-card-title">
+                      <h3 className="card-title">Теплова карта активності</h3>
+                      <p className="heatmap-subtitle">
+                        {focusMode === "all" ? "Усі звички" : `Фокус: ${focusMode}`}
+                        {" · "}
+                        {heatmapModel.startDate} — {heatmapModel.endDate}
+                      </p>
+                    </div>
+                    <div className="heatmap-range-selector" role="group" aria-label="Період heatmap">
+                      {(Object.keys(HEATMAP_RANGE_CONFIG) as HeatmapRange[]).map((key) => (
+                        <button
+                          key={key}
+                          type="button"
+                          className={`heatmap-range-btn ${heatmapRange === key ? "active" : ""}`}
+                          onClick={() => setHeatmapRange(key)}
                         >
-                          <span className="tooltip">
-                            {cell.date}: {cell.completions} відміток
-                          </span>
-                        </div>
+                          {HEATMAP_RANGE_CONFIG[key].label}
+                        </button>
                       ))}
+                    </div>
+                  </div>
+
+                  <div className="heatmap-summary">
+                    <span><b>{heatmapModel.totalCompletions}</b> виконань</span>
+                    <span><b>{heatmapModel.activeDays}</b> активних днів</span>
+                  </div>
+
+                  <div className="heatmap-layout" data-range={heatmapRange}>
+                    <div className="heatmap-day-labels" aria-hidden="true">
+                      {HEATMAP_DAY_LABELS.map((label, idx) => (
+                        <span key={label} className={idx % 2 === 0 ? "is-visible" : ""}>
+                          {label}
+                        </span>
+                      ))}
+                    </div>
+
+                    <div className="heatmap-scroll-container">
+                      {heatmapRange !== "week" && heatmapModel.monthLabels.length > 0 && (
+                        <div
+                          className="heatmap-month-row"
+                          style={{ gridTemplateColumns: `repeat(${heatmapModel.weekCount}, var(--heatmap-cell-size))` }}
+                        >
+                          {heatmapModel.monthLabels.map((m) => (
+                            <span
+                              key={`${m.label}-${m.column}`}
+                              className="heatmap-month-label"
+                              style={{ gridColumn: `${m.column + 1}` }}
+                            >
+                              {m.label}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      <div
+                        className="heatmap-grid"
+                        data-range={heatmapRange}
+                        style={{ gridTemplateColumns: `repeat(${heatmapModel.weekCount}, var(--heatmap-cell-size))` }}
+                      >
+                        {heatmapModel.cells.map((cell, idx) => (
+                          <div
+                            key={`${cell.date ?? "pad"}-${idx}`}
+                            className={`heatmap-cell heatmap-cell--${cell.variant}`}
+                            data-count={cell.variant === "active" ? cell.intensity : undefined}
+                            aria-label={
+                              cell.date
+                                ? `${cell.date}: ${cell.completions} виконань`
+                                : undefined
+                            }
+                          >
+                            {cell.date && (
+                              <span className="tooltip">
+                                {cell.date}: {cell.completions}{" "}
+                                {cell.completions === 1 ? "виконання" : "виконань"}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
 
                   <div className="heatmap-labels">
                     <span>Менше</span>
-                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                      <div className="heatmap-cell" data-count="0" style={{ cursor: 'default' }}></div>
-                      <div className="heatmap-cell" data-count="1" style={{ cursor: 'default' }}></div>
-                      <div className="heatmap-cell" data-count="2" style={{ cursor: 'default' }}></div>
-                      <div className="heatmap-cell" data-count="3" style={{ cursor: 'default' }}></div>
-                      <div className="heatmap-cell" data-count="4" style={{ cursor: 'default' }}></div>
+                    <div className="heatmap-legend">
+                      {[0, 1, 2, 3, 4].map((level) => (
+                        <div key={level} className="heatmap-cell" data-count={level} aria-hidden="true" />
+                      ))}
                     </div>
                     <span>Більше</span>
                   </div>
@@ -1093,15 +1334,126 @@ export default function App() {
 
         {/* TAB 2: ANALYTICS */}
         {activeTab === 'analytics' && stats && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '30px' }}>
+          <div className="tab-stack">
             <div className="dashboard-title">
               <h1>Аналітика Продуктивності</h1>
-              <p>Детальний розподіл ваших звичок та зусиль.</p>
+              <p>Детальний розподіл ваших звичок та зусиль на основі даних API.</p>
             </div>
 
             <div className="dashboard-grid">
-              
-              {/* Category Breakdown list */}
+
+              {/* Time series from chart_data */}
+              <div className="card chart-card-wide">
+                <h3 className="card-title">Динаміка виконань (14 днів)</h3>
+                <div className="chart-svg-container">
+                  <svg width="100%" height="100%" viewBox="0 0 420 180" preserveAspectRatio="xMidYMid meet">
+                    {(() => {
+                      const series = stats.chart_data.completion_time_series;
+                      const maxCount = Math.max(...series.map((p) => p.count), 1);
+                      const padL = 36;
+                      const padR = 16;
+                      const padT = 20;
+                      const padB = 36;
+                      const w = 420 - padL - padR;
+                      const h = 180 - padT - padB;
+                      const points = series.map((p, i) => {
+                        const x = padL + (series.length <= 1 ? w / 2 : (i / (series.length - 1)) * w);
+                        const y = padT + h - (p.count / maxCount) * h;
+                        return `${x},${y}`;
+                      }).join(" ");
+                      return (
+                        <>
+                          <line x1={padL} y1={padT + h} x2={420 - padR} y2={padT + h} stroke="var(--text-muted)" strokeWidth="1.5" />
+                          {[0, 0.5, 1].map((frac) => (
+                            <line
+                              key={frac}
+                              x1={padL}
+                              y1={padT + h * (1 - frac)}
+                              x2={420 - padR}
+                              y2={padT + h * (1 - frac)}
+                              stroke="var(--border-light)"
+                              strokeWidth="1"
+                              strokeDasharray="4"
+                            />
+                          ))}
+                          {series.length > 0 && (
+                            <>
+                              <polyline points={points} fill="none" stroke="var(--accent-primary)" strokeWidth="2.5" strokeLinejoin="round" />
+                              {series.map((p, i) => {
+                                const x = padL + (series.length <= 1 ? w / 2 : (i / (series.length - 1)) * w);
+                                const y = padT + h - (p.count / maxCount) * h;
+                                return (
+                                  <g key={p.date}>
+                                    <circle cx={x} cy={y} r="4" fill="var(--accent-primary)" />
+                                    {(i === 0 || i === series.length - 1 || i === Math.floor(series.length / 2)) && (
+                                      <text x={x} y={padT + h + 16} textAnchor="middle" fontSize="9" fill="var(--text-muted)">
+                                        {p.date.slice(5)}
+                                      </text>
+                                    )}
+                                  </g>
+                                );
+                              })}
+                            </>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </svg>
+                </div>
+              </div>
+
+              {/* Weekly comparison */}
+              <div className="card">
+                <h3 className="card-title">Порівняння тижнів</h3>
+                <div className="chart-svg-container">
+                  <svg width="100%" height="100%" viewBox="0 0 300 150">
+                    <line x1="30" y1="120" x2="280" y2="120" stroke="var(--text-muted)" strokeWidth="1.5" />
+                    {stats.chart_data.weekly_comparison.map((w, i) => {
+                      const maxVal = Math.max(...stats.chart_data.weekly_comparison.map((x) => x.completions), 1);
+                      const barH = Math.min(90, (w.completions / maxVal) * 90);
+                      const x = 80 + i * 100;
+                      return (
+                        <g key={w.week}>
+                          <rect x={x} y={120 - barH} width="50" height={barH} className="chart-svg-bar" style={{ fill: i === 1 ? 'var(--accent-primary)' : '#64748b' }} />
+                          <text x={x + 25} y="135" textAnchor="middle" fontSize="9" fill="var(--text-muted)">{w.week.split('-W')[1] ?? w.week}</text>
+                          <text x={x + 25} y={110 - barH} textAnchor="middle" fontSize="11" fontWeight="700" fill="var(--text-heading)">{w.completions}</text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                </div>
+                <p className="chart-caption">Минулий vs поточний тиждень (ISO)</p>
+              </div>
+
+              {/* Category XP bar chart from chart_data */}
+              <div className="card">
+                <h3 className="card-title">XP за категоріями</h3>
+                <div className="chart-svg-container">
+                  <svg width="100%" height="100%" viewBox="0 0 300 180">
+                    <line x1="30" y1="150" x2="280" y2="150" stroke="var(--text-muted)" strokeWidth="1.5" />
+                    {(() => {
+                      const bars = stats.chart_data.category_bar.length
+                        ? stats.chart_data.category_bar
+                        : Object.entries(stats.category_stats).map(([category, xp]) => ({ category, xp }));
+                      const maxXp = Math.max(...bars.map((b) => b.xp), 1);
+                      const slot = 240 / Math.max(bars.length, 1);
+                      return bars.map((b, i) => {
+                        const barH = Math.min(110, (b.xp / maxXp) * 110);
+                        const x = 40 + i * slot;
+                        return (
+                          <g key={b.category}>
+                            <rect x={x} y={150 - barH} width={Math.min(40, slot - 10)} height={barH} className="chart-svg-bar" style={{ fill: 'var(--accent-primary)' }} />
+                            <text x={x + 20} y="165" textAnchor="middle" fontSize="8" fill="var(--text-muted)">{b.category.slice(0, 4)}</text>
+                            <text x={x + 20} y={140 - barH} textAnchor="middle" fontSize="10" fontWeight="700" fill="var(--text-heading)">{b.xp}</text>
+                          </g>
+                        );
+                      });
+                    })()}
+                  </svg>
+                </div>
+              </div>
+
+              {/* Category breakdown list */}
               <div className="card">
                 <h3 className="card-title">Розподіл XP за категоріями</h3>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginTop: '10px' }}>
@@ -1110,19 +1462,14 @@ export default function App() {
                     const pct = Math.round((xp / maxXP) * 100);
                     return (
                       <div key={cat} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', textTransform: 'capitalize' }}>
-                          <span style={{ fontWeight: 600 }}>
-                            {cat === 'study' ? '📚 Навчання' : 
-                             cat === 'sport' ? '🏃 Спорт' : 
-                             cat === 'sleep' ? '😴 Сон' : 
-                             cat === 'nutrition' ? '🍎 Харчування' : '🧩 Інше'}
-                          </span>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px' }}>
+                          <span style={{ fontWeight: 600 }}>{categoryLabel(cat)}</span>
                           <span style={{ color: 'var(--text-muted)' }}>{xp} XP</span>
                         </div>
                         <div className="xp-progress-container" style={{ height: '8px' }}>
-                          <div 
-                            className="xp-progress-fill" 
-                            style={{ 
+                          <div
+                            className="xp-progress-fill"
+                            style={{
                               width: `${pct}%`,
                               background: cat === 'study' ? '#3b82f6' :
                                           cat === 'sport' ? '#f97316' :
@@ -1134,56 +1481,6 @@ export default function App() {
                       </div>
                     );
                   })}
-                </div>
-              </div>
-
-              {/* Custom SVG Bar Chart */}
-              <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
-                <h3 className="card-title">Статистика виконання (Відмітки)</h3>
-                
-                <div className="chart-svg-container" style={{ marginTop: '20px' }}>
-                  <svg width="100%" height="100%" viewBox="0 0 300 150">
-                    {/* Y Axis Gridlines */}
-                    <line x1="30" y1="20" x2="280" y2="20" stroke="var(--border-light)" strokeWidth="1" strokeDasharray="4" />
-                    <line x1="30" y1="70" x2="280" y2="70" stroke="var(--border-light)" strokeWidth="1" strokeDasharray="4" />
-                    <line x1="30" y1="120" x2="280" y2="120" stroke="var(--border-light)" strokeWidth="1" strokeDasharray="4" />
-                    
-                    {/* X Axis Line */}
-                    <line x1="30" y1="130" x2="280" y2="130" stroke="var(--text-muted)" strokeWidth="1.5" />
-                    
-                    {/* Bars */}
-                    {/* 1. Daily completions count */}
-                    <rect 
-                      x="70" 
-                      y={130 - Math.min(100, stats.completions_count * 5)} 
-                      width="40" 
-                      height={Math.min(100, stats.completions_count * 5)} 
-                      className="chart-svg-bar" 
-                      style={{ fill: 'var(--accent-primary)' }}
-                    />
-                    <text x="90" y="145" textAnchor="middle" fontSize="10" fill="var(--text-muted)">Виконано</text>
-                    <text x="90" y={120 - Math.min(100, stats.completions_count * 5)} textAnchor="middle" fontSize="11" fontWeight="700" fill="var(--text-heading)">
-                      {stats.completions_count}
-                    </text>
-
-                    {/* 2. Total active habits count */}
-                    <rect 
-                      x="180" 
-                      y={130 - Math.min(100, stats.habits_count * 15)} 
-                      width="40" 
-                      height={Math.min(100, stats.habits_count * 15)} 
-                      className="chart-svg-bar" 
-                      style={{ fill: '#14b8a6' }}
-                    />
-                    <text x="200" y="145" textAnchor="middle" fontSize="10" fill="var(--text-muted)">Звички</text>
-                    <text x="200" y={120 - Math.min(100, stats.habits_count * 15)} textAnchor="middle" fontSize="11" fontWeight="700" fill="var(--text-heading)">
-                      {stats.habits_count}
-                    </text>
-                  </svg>
-                </div>
-
-                <div style={{ marginTop: '15px', fontSize: '13px', color: 'var(--text-muted)', textAlign: 'center' }}>
-                  Ви виконали <b>{stats.completions_count}</b> завдань серед ваших <b>{stats.habits_count}</b> активних звичок.
                 </div>
               </div>
 
@@ -1217,6 +1514,28 @@ export default function App() {
               <li><b>Доросле дерево:</b> від 1200 до 1499 XP</li>
               <li><b>Квітуча екосистема:</b> 1500+ XP (додаються метелики, хмаринки та квіти!)</li>
             </ol>
+
+            <div className="dev-date-panel">
+              <h3 style={{ margin: '24px 0 10px', color: 'var(--text-heading)' }}>🛠 Тестова дата (dev)</h3>
+              <p style={{ fontSize: '14px', marginBottom: '12px', color: 'var(--text-muted)' }}>
+                Поточна ефективна дата сервера: <b>{effectiveDate}</b>
+                {dateOverridden && " (перевизначено)"}
+              </p>
+              <div className="dev-date-controls">
+                <input
+                  type="date"
+                  className="form-input"
+                  value={devDateInput}
+                  onChange={(e) => setDevDateInput(e.target.value)}
+                />
+                <button type="button" className="primary-btn" onClick={() => handleDateOverride(devDateInput)}>
+                  Застосувати
+                </button>
+                <button type="button" className="secondary-btn" onClick={() => handleDateOverride(null)}>
+                  Скинути
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -1297,13 +1616,91 @@ export default function App() {
       {/* MODAL 2: Weekly Report Summary */}
       {showWeeklyReport && stats && (
         <div className="modal-backdrop" onClick={() => setShowWeeklyReport(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-content modal-content-wide" onClick={(e) => e.stopPropagation()}>
             <h2 style={{ marginBottom: '20px', color: 'var(--text-heading)', textAlign: 'center' }}>
               📊 Щотижневий звіт продуктивності
             </h2>
 
             <div className="weekly-report-body">
+              <div className="weekly-stats-grid">
+                <div className="weekly-stat-box">
+                  <span className="weekly-stat-value">{stats.weekly_report.habit_counts.total}</span>
+                  <span className="weekly-stat-label">Звичок</span>
+                </div>
+                <div className="weekly-stat-box">
+                  <span className="weekly-stat-value">{stats.weekly_report.habit_counts.daily}</span>
+                  <span className="weekly-stat-label">Щоденних</span>
+                </div>
+                <div className="weekly-stat-box">
+                  <span className="weekly-stat-value">{stats.weekly_report.habit_counts.weekly}</span>
+                  <span className="weekly-stat-label">Щотижневих</span>
+                </div>
+                <div className="weekly-stat-box">
+                  <span className="weekly-stat-value">{stats.weekly_report.average_streak}</span>
+                  <span className="weekly-stat-label">Сер. streak</span>
+                </div>
+                <div className="weekly-stat-box">
+                  <span className="weekly-stat-value">{stats.weekly_report.longest_streak}</span>
+                  <span className="weekly-stat-label">Max streak</span>
+                </div>
+              </div>
+
               <div style={{ display: 'flex', justifyContent: 'space-around', textAlign: 'center' }}>
+                <div>
+                  <span style={{ fontSize: '28px', fontWeight: 800, color: 'var(--text-heading)' }}>
+                    {stats.weekly_report.this_week_completions}
+                  </span>
+                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>Цей тиждень</p>
+                </div>
+                <div>
+                  <span style={{ fontSize: '28px', fontWeight: 800, color: 'var(--text-muted)' }}>
+                    {stats.weekly_report.last_week_completions}
+                  </span>
+                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>Минулий тиждень</p>
+                </div>
+              </div>
+
+              <div>
+                <h4 className="weekly-section-title">Виконання по днях тижня</h4>
+                <div className="weekday-bars">
+                  {WEEKDAY_ORDER.map((day) => {
+                    const count = stats.weekly_report.completions_by_day[day] ?? 0;
+                    const maxDay = Math.max(
+                      ...WEEKDAY_ORDER.map((d) => stats.weekly_report.completions_by_day[d] ?? 0),
+                      1
+                    );
+                    return (
+                      <div key={day} className="weekday-bar-col">
+                        <div
+                          className="weekday-bar-fill"
+                          style={{ height: `${Math.max(8, (count / maxDay) * 72)}px` }}
+                          title={`${WEEKDAY_UA[day]}: ${count}`}
+                        />
+                        <span className="weekday-bar-label">{WEEKDAY_UA[day]}</span>
+                        <span className="weekday-bar-count">{count}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {stats.weekly_report.upcoming_due_dates.length > 0 && (
+                <div>
+                  <h4 className="weekly-section-title">Найближчі дедлайни</h4>
+                  <ul className="upcoming-due-list">
+                    {stats.weekly_report.upcoming_due_dates.map((item) => (
+                      <li key={`${item.habit_id}-${item.due_date}`}>
+                        <span className="due-title">{item.title}</span>
+                        <span className="due-meta">
+                          {item.frequency === "daily" ? "Щодня" : "Щотижня"} · до {item.due_date}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div style={{ display: 'flex', justifyContent: 'center' }}>
                 <div>
                   <span style={{ fontSize: '28px', fontWeight: 800, color: 'var(--text-heading)' }}>
                     {stats.weekly_report.this_week_completions}

@@ -1,6 +1,10 @@
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field, field_validator, ValidationError
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_LENGTH = 128
+
 
 class UserCreate(BaseModel):
     """Payload for POST /api/auth/register."""
@@ -9,7 +13,12 @@ class UserCreate(BaseModel):
         ..., min_length=3, max_length=64, examples=["john_doe"]
     )
     email: EmailStr = Field(..., examples=["john@example.com"])
-    password: str = Field(..., min_length=8, examples=["StrongPass1!"])
+    password: str = Field(
+        ...,
+        min_length=PASSWORD_MIN_LENGTH,
+        max_length=PASSWORD_MAX_LENGTH,
+        examples=["StrongPass1!"],
+    )
 
     @field_validator("username")
     @classmethod
@@ -23,9 +32,14 @@ class UserCreate(BaseModel):
     @field_validator("password")
     @classmethod
     def password_strength(cls, v: str) -> str:
-        if len(v) < 8:
-            raise ValueError("Password must be at least 8 characters long.")
-        # Optional: add more checks (uppercase, digit, special) if desired
+        if len(v) < PASSWORD_MIN_LENGTH:
+            raise ValueError(
+                f"Password must be at least {PASSWORD_MIN_LENGTH} characters long."
+            )
+        if len(v) > PASSWORD_MAX_LENGTH:
+            raise ValueError(
+                f"Password must be at most {PASSWORD_MAX_LENGTH} characters long."
+            )
         return v
 
 class UserRead(BaseModel):

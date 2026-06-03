@@ -11,9 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_db
 from app.core.security import create_access_token
-from app.crud.user import authenticate_user, create_user, get_user_by_email, get_user_by_username
+from app.crud.user import authenticate_user
 from app.schemas.token import Token
 from app.schemas.user import UserCreate, UserRead
+from app.services.auth_service import register_user
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
@@ -33,24 +34,11 @@ async def register(
 
     - **username**: 3–64 alphanumeric characters, underscores, or hyphens.
     - **email**: Must be a valid e-mail address.
-    - **password**: Minimum 8 characters.
+    - **password**: 8–128 characters (any printable characters).
 
     Returns the newly created user (no password exposed).
     """
-    # Check for duplicate email
-    if await get_user_by_email(db, payload.email):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="An account with this email address already exists.",
-        )
-    # Check for duplicate username
-    if await get_user_by_username(db, payload.username):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This username is already taken.",
-        )
-
-    user = await create_user(db, payload)
+    user = await register_user(db, payload)
     return UserRead.model_validate(user)
 
 

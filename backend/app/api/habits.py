@@ -10,14 +10,13 @@ Habit + HabitLog endpoints (all require authentication):
   POST   /api/habits/{habit_id}/logs     – Upsert a log entry (mark done/undone)
   GET    /api/habits/{habit_id}/logs     – List all log entries for a habit
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user, get_db
 from app.crud.habit import (
     create_habit,
     delete_habit,
-    get_habit_by_id,
     get_habits_by_user,
     get_logs_by_habit,
     update_habit,
@@ -31,41 +30,10 @@ from app.schemas.habit import (
     HabitRead,
     HabitUpdate,
 )
+from app.services.habit_service import get_own_habit
 
 router = APIRouter(prefix="/api/habits", tags=["Habits"])
 
-
-# ── Helper ────────────────────────────────────────────────────────────────────
-
-async def _get_own_habit(
-    habit_id: int,
-    db: AsyncSession,
-    current_user: User,
-) -> "Habit":  # noqa: F821
-    """
-    Fetch a habit by *habit_id* and assert it belongs to *current_user*.
-
-    Raises:
-        404 if the habit does not exist.
-        403 if the habit belongs to a different user.
-    """
-    from app.models.habit import Habit  # local import to avoid circular
-
-    habit = await get_habit_by_id(db, habit_id)
-    if habit is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Habit with id={habit_id} not found.",
-        )
-    if habit.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have permission to access this habit.",
-        )
-    return habit
-
-
-# ── Habit endpoints ───────────────────────────────────────────────────────────
 
 @router.post(
     "/",
@@ -113,7 +81,7 @@ async def update_existing_habit(
 
     Only the fields present in the request body are updated.
     """
-    habit = await _get_own_habit(habit_id, db, current_user)
+    habit = await get_own_habit(habit_id, db, current_user)
     updated = await update_habit(db, habit, payload)
     return HabitRead.model_validate(updated)
 
@@ -133,7 +101,7 @@ async def delete_existing_habit(
 
     Returns 204 No Content on success.
     """
-    habit = await _get_own_habit(habit_id, db, current_user)
+    habit = await get_own_habit(habit_id, db, current_user)
     await delete_habit(db, habit)
 
 
@@ -160,7 +128,7 @@ async def upsert_log(
 
     This is the primary endpoint used by the frontend calendar/heatmap.
     """
-    await _get_own_habit(habit_id, db, current_user)
+    await get_own_habit(habit_id, db, current_user)
     log = await upsert_habit_log(db, habit_id, payload)
     return HabitLogRead.model_validate(log)
 
@@ -181,6 +149,6 @@ async def get_habit_logs(
     The response is structured to feed directly into a heatmap component —
     each entry contains ``execution_date`` and ``is_completed``.
     """
-    await _get_own_habit(habit_id, db, current_user)
+    await get_own_habit(habit_id, db, current_user)
     logs = await get_logs_by_habit(db, habit_id)
     return [HabitLogRead.model_validate(log) for log in logs]

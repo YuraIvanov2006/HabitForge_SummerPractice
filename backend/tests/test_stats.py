@@ -54,6 +54,14 @@ async def test_stats_empty_dashboard(client: AsyncClient) -> None:
     assert data["weekly_report"]["this_week_completions"] == 0
     assert data["weekly_report"]["last_week_completions"] == 0
     assert data["weekly_report"]["growth_rate"] == 0.0
+    assert data["weekly_report"]["habit_counts"]["total"] == 0
+    assert data["weekly_report"]["completed_this_week"] == 0
+    assert data["weekly_report"]["average_streak"] == 0.0
+    assert data["weekly_report"]["longest_streak"] == 0
+    assert "Mon" in data["weekly_report"]["completions_by_day"]
+    assert data["weekly_report"]["upcoming_due_dates"] == []
+    assert "chart_data" in data
+    assert "completion_time_series" in data["chart_data"]
 
 
 async def test_stats_xp_and_level_progression(client: AsyncClient) -> None:
@@ -149,3 +157,29 @@ async def test_stats_streaks_calculation(client: AsyncClient) -> None:
     res_stats = await client.get("/api/stats/", headers=headers)
     assert res_stats.json()["streak_current"] == 4
     assert res_stats.json()["streak_longest"] == 4
+
+
+async def test_weekly_report_endpoint(client: AsyncClient) -> None:
+    """GET /api/reports/weekly returns extended weekly report fields."""
+    headers = await _get_auth_headers(client, "weekly@example.com", "weekly")
+
+    await client.post(
+        "/api/habits/",
+        headers=headers,
+        json={"title": "Daily Task", "category": "study", "frequency": "daily"},
+    )
+    await client.post(
+        "/api/habits/",
+        headers=headers,
+        json={"title": "Weekly Task", "category": "sport", "frequency": "weekly"},
+    )
+
+    response = await client.get("/api/reports/weekly", headers=headers)
+    assert response.status_code == 200
+    report = response.json()
+    assert report["habit_counts"]["total"] == 2
+    assert report["habit_counts"]["daily"] == 1
+    assert report["habit_counts"]["weekly"] == 1
+    assert "completions_by_day" in report
+    assert "upcoming_due_dates" in report
+    assert len(report["upcoming_due_dates"]) >= 1

@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     # ── App ──────────────────────────────────────────────────────────────────
     APP_ENV: str = "development"
     ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
+    ALLOW_DATE_OVERRIDE: bool = True
 
     @property
     def allowed_origins_list(self) -> List[str]:

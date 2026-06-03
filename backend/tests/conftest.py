@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.core.dependencies import get_db
+from app.core.state import set_current_date
 from app.db.base import Base
 from app.main import app
 # Import models to ensure they are registered with Base.metadata
@@ -77,3 +78,10 @@ def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
     loop = asyncio.get_event_loop_policy().new_event_loop()
     yield loop
     loop.close()
+
+
+@pytest.fixture(autouse=True)
+def reset_date_override() -> None:
+    set_current_date(None)
+    yield
+    set_current_date(None)

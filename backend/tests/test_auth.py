@@ -125,3 +125,33 @@ async def test_login_invalid_credentials(client: AsyncClient) -> None:
     )
     assert response.status_code == 401
     assert response.json()["detail"] == "Incorrect email or password."
+
+
+async def test_register_short_password(client: AsyncClient) -> None:
+    """Test registration with a password shorter than 8 characters."""
+    response = await client.post(
+        "/api/auth/register",
+        json={
+            "username": "shortpw",
+            "email": "short@example.com",
+            "password": "abc",
+        },
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert any("8 characters" in str(item.get("msg", "")) for item in detail)
+
+
+async def test_register_password_too_long(client: AsyncClient) -> None:
+    """Test registration with a password longer than 128 characters."""
+    response = await client.post(
+        "/api/auth/register",
+        json={
+            "username": "longpw",
+            "email": "long@example.com",
+            "password": "a" * 129,
+        },
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert any("128 characters" in str(item.get("msg", "")) for item in detail)

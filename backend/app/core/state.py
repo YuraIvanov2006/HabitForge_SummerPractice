@@ -16,3 +16,9 @@ def set_current_date(new_date: datetime.date | None) -> None:
     with _class_lock:
         global _current_date
         _current_date = new_date
+
+
+def is_date_overridden() -> bool:
+    """Return True when a virtual date override is active."""
+    with _class_lock:
+        return _current_date is not None
