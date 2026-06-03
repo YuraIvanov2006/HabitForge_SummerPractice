@@ -24,6 +24,7 @@ async def create_habit(
         title=payload.title,
         description=payload.description,
         frequency=payload.frequency,
+        category=payload.category,
     )
     db.add(habit)
     await db.commit()

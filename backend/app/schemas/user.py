@@ -1,12 +1,6 @@
-"""
-app/schemas/user.py
-───────────────────
-Pydantic schemas for the User resource.
-"""
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
-
+from pydantic import BaseModel, EmailStr, Field, field_validator, ValidationError
 
 class UserCreate(BaseModel):
     """Payload for POST /api/auth/register."""
@@ -26,6 +20,13 @@ class UserCreate(BaseModel):
             )
         return v
 
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters long.")
+        # Optional: add more checks (uppercase, digit, special) if desired
+        return v
 
 class UserRead(BaseModel):
     """Safe user representation returned by the API (no password)."""
@@ -36,7 +37,6 @@ class UserRead(BaseModel):
     username: str
     email: EmailStr
     created_at: datetime
-
 
 class UserLogin(BaseModel):
     """Payload for POST /api/auth/login (JSON body alternative)."""

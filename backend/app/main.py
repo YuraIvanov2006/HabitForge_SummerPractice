@@ -12,7 +12,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, habits, users
+from app.api import auth, habits, users, stats
 from app.core.config import settings
 
 
@@ -64,6 +64,7 @@ def create_application() -> FastAPI:
     application.include_router(auth.router)
     application.include_router(users.router)
     application.include_router(habits.router)
+    application.include_router(stats.router)
 
     return application
 

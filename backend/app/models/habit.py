@@ -23,6 +23,9 @@ class Habit(Base):
     frequency: Mapped[str] = mapped_column(
         String(16), nullable=False, default="daily"
     )  # 'daily' | 'weekly'
+    category: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="other"
+    )  # 'study' | 'sport' | 'sleep' | 'nutrition' | 'other'
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

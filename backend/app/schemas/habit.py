@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 # ── Habit schemas ─────────────────────────────────────────────────────────────
 
 FrequencyType = Literal["daily", "weekly"]
+CategoryType = Literal["study", "sport", "sleep", "nutrition", "other"]
 
 
 class HabitCreate(BaseModel):
@@ -22,6 +23,7 @@ class HabitCreate(BaseModel):
         None, max_length=500, examples=["Run 5 km every morning before work."]
     )
     frequency: FrequencyType = Field("daily", examples=["daily"])
+    category: CategoryType = Field("other", examples=["other"])
 
 
 class HabitUpdate(BaseModel):
@@ -30,6 +32,7 @@ class HabitUpdate(BaseModel):
     title: str | None = Field(None, min_length=1, max_length=128)
     description: str | None = Field(None, max_length=500)
     frequency: FrequencyType | None = None
+    category: CategoryType | None = None
 
 
 class HabitRead(BaseModel):
@@ -42,6 +45,7 @@ class HabitRead(BaseModel):
     title: str
     description: str | None
     frequency: str
+    category: str
     created_at: datetime
 
 
