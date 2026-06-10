@@ -109,3 +109,44 @@ async def test_logs_upsert_no_duplicates(client: AsyncClient) -> None:
     ]
     assert len(june5_logs) == 1
     assert june5_logs[0]["is_completed"] is True
+
+
+@pytest.mark.asyncio
+async def test_api_heatmap_endpoint(client: AsyncClient) -> None:
+    """Test the GET /api/stats/heatmap API endpoint."""
+    headers = await _get_auth_headers(client, "apiheatmap@example.com", "apiheatmap")
+    
+    # Create a habit
+    res = await client.post(
+        "/api/habits/",
+        headers=headers,
+        json={"title": "Meditation", "category": "sleep", "frequency": "daily"},
+    )
+    habit_id = res.json()["id"]
+
+    # Log completion
+    await client.post(
+        f"/api/habits/{habit_id}/logs",
+        headers=headers,
+        json={"execution_date": "2026-06-05", "is_completed": True},
+    )
+
+    # Call the heatmap endpoint
+    heatmap_res = await client.get("/api/stats/heatmap?range=week", headers=headers)
+    assert heatmap_res.status_code == 200
+    data = heatmap_res.json()
+    assert "cells" in data
+    assert "weekCount" in data
+    assert data["weekCount"] == 1
+    assert "startDate" in data
+    assert "endDate" in data
+    assert data["totalCompletions"] == 1
+
+    # Call with category filter matching
+    heatmap_res_filter = await client.get("/api/stats/heatmap?range=week&category=sleep", headers=headers)
+    assert heatmap_res_filter.json()["totalCompletions"] == 1
+
+    # Call with category filter mismatching
+    heatmap_res_mismatch = await client.get("/api/stats/heatmap?range=week&category=sport", headers=headers)
+    assert heatmap_res_mismatch.json()["totalCompletions"] == 0
+

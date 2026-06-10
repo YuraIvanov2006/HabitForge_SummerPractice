@@ -15,6 +15,9 @@ from app.schemas.stats import (
     StatsResponse,
     UpcomingDueDate,
     WeeklyReportSummary,
+    HeatmapResponse,
+    HeatmapCellResponse,
+    MonthLabel,
 )
 from app.utils.visuals import build_chart_data, build_completions_by_day
 
@@ -250,3 +253,140 @@ async def get_user_stats(db: AsyncSession, user_id: int) -> StatsResponse:
     """Load habits for *user_id* and compute statistics."""
     habits = await get_habits_by_user(db, user_id)
     return compute_user_stats(habits)
+
+
+UKRAINIAN_MONTH_LABELS = ["Січ", "Лют", "Бер", "Кві", "Тра", "Чер", "Лип", "Сер", "Вер", "Жов", "Лис", "Гру"]
+
+
+async def get_user_heatmap(
+    db: AsyncSession,
+    user_id: int,
+    range_type: str = "6months",
+    category_filter: str | None = None,
+    today: date | None = None,
+) -> HeatmapResponse:
+    """Compute and return structured heatmap cells aligned with Monday-Sunday grid."""
+    habits = await get_habits_by_user(db, user_id)
+    today = today or get_current_date()
+
+    # Calculate completed dates count
+    date_counts: dict[date, int] = {}
+    for habit in habits:
+        if category_filter and habit.category != category_filter:
+            continue
+        for log in habit.logs:
+            if log.is_completed:
+                d = log.execution_date
+                date_counts[d] = date_counts.get(d, 0) + 1
+
+    # Range configuration
+    days_map = {"week": 7, "month": 30, "6months": 182}
+    range_days = days_map.get(range_type, 182)
+
+    start_date = today - timedelta(days=range_days - 1)
+    
+    # Filter date counts in range for max calculation
+    counts_in_range = [
+        count for d, count in date_counts.items()
+        if start_date <= d <= today
+    ]
+    max_count = max(counts_in_range) if counts_in_range else 1
+    if max_count < 1:
+        max_count = 1
+
+    def make_active_cell(d: date) -> HeatmapCellResponse:
+        completions = date_counts.get(d, 0)
+        intensity = 0
+        if completions > 0:
+            if max_count <= 4:
+                intensity = min(4, completions)
+            else:
+                intensity = min(4, max(1, round((completions / max_count) * 4)))
+        return HeatmapCellResponse(
+            date=d.isoformat(),
+            intensity=intensity,
+            completions=completions,
+            variant="active"
+        )
+
+    cells: list[HeatmapCellResponse] = []
+    total_completions = 0
+    active_days = 0
+
+    if range_type == "week":
+        # Align to Monday - Sunday of the week containing 'today'
+        monday_offset = today.weekday()
+        week_start = today - timedelta(days=monday_offset)
+        for i in range(7):
+            cursor = week_start + timedelta(days=i)
+            is_future = cursor > today
+            if is_future:
+                cells.append(HeatmapCellResponse(date=cursor.isoformat(), intensity=0, completions=0, variant="future"))
+            else:
+                cell = make_active_cell(cursor)
+                total_completions += cell.completions
+                if cell.completions > 0:
+                    active_days += 1
+                cells.append(cell)
+        
+        return HeatmapResponse(
+            cells=cells,
+            weekCount=1,
+            monthLabels=[],
+            startDate=week_start.isoformat(),
+            endDate=(week_start + timedelta(days=6)).isoformat(),
+            totalCompletions=total_completions,
+            activeDays=active_days
+        )
+
+    # For month / 6months, we pad the start to Monday and end to Sunday
+    start_weekday = start_date.weekday()
+    grid_start = start_date - timedelta(days=start_weekday)
+
+    end_weekday = today.weekday()
+    sunday_offset = 6 - end_weekday
+    grid_end = today + timedelta(days=sunday_offset)
+
+    cursor = grid_start
+    while cursor <= grid_end:
+        in_range = start_date <= cursor <= today
+        is_future = cursor > today
+
+        if in_range:
+            cell = make_active_cell(cursor)
+            total_completions += cell.completions
+            if cell.completions > 0:
+                active_days += 1
+            cells.append(cell)
+        elif is_future:
+            cells.append(HeatmapCellResponse(date=cursor.isoformat(), intensity=0, completions=0, variant="future"))
+        else:
+            cells.append(HeatmapCellResponse(date=None, intensity=0, completions=0, variant="padding"))
+        cursor += timedelta(days=1)
+
+    week_count = len(cells) // 7
+    month_labels: list[MonthLabel] = []
+    last_month = -1
+
+    for col in range(week_count):
+        for row in range(7):
+            cell = cells[col * 7 + row]
+            if not cell.date:
+                continue
+            cell_date = date.fromisoformat(cell.date)
+            month = cell_date.month - 1
+            if month != last_month:
+                month_labels.append(MonthLabel(label=UKRAINIAN_MONTH_LABELS[month], column=col))
+                last_month = month
+                break
+
+    return HeatmapResponse(
+        cells=cells,
+        weekCount=week_count,
+        monthLabels=month_labels,
+        startDate=start_date.isoformat(),
+        endDate=today.isoformat(),
+        totalCompletions=total_completions,
+        activeDays=active_days
+    )
+

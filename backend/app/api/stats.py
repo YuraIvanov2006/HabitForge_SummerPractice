@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user, get_db
 from app.models.user import User
-from app.schemas.stats import StatsResponse
-from app.services.stats_service import get_user_stats
+from app.schemas.stats import StatsResponse, HeatmapResponse
+from app.services.stats_service import get_user_stats, get_user_heatmap
 
 router = APIRouter(prefix="/api/stats", tags=["Statistics & Gamification"])
 
@@ -36,3 +36,22 @@ async def read_user_stats(
       - Stage = min(5, XP // 300)
     """
     return await get_user_stats(db, current_user.id)
+
+
+@router.get(
+    "/heatmap",
+    response_model=HeatmapResponse,
+    summary="Get user habit completion heatmap",
+)
+async def read_user_heatmap(
+    range: str = "6months",
+    category: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> HeatmapResponse:
+    """
+    Calculate and return the user's completion heatmap grid data.
+    Allows filtering by range (week, month, 6months) and category.
+    """
+    return await get_user_heatmap(db, current_user.id, range, category)
+

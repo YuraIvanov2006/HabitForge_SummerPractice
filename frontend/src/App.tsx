@@ -1,204 +1,16 @@
-/*
-frontend/src/App.tsx
-───────────────────
-Core React SPA for the HabitForge application.
-Orchestrates authentication, habit tracking CRUD, Focus Modes,
-XP/Level gamification, Git-style Heatmap, custom SVG tree growth,
-and custom SVG analytical bar charts.
-*/
-
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import './App.css';
 
-// ── Configuration ────────────────────────────────────────────────────────────
+// Component imports
+import AuthScreen from './components/AuthScreen';
+import DashboardTab from './components/DashboardTab';
+import AnalyticsTab from './components/AnalyticsTab';
+import WeeklyReportModal from './components/WeeklyReportModal';
+import HabitModal from './components/HabitModal';
+
+// ── Configuration & Types ──────────────────────────────────────────────────
 const API_BASE = "http://127.0.0.1:8000";
 
-const WEEKDAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
-const WEEKDAY_UA: Record<string, string> = {
-  Mon: "Пн", Tue: "Вт", Wed: "Ср", Thu: "Чт", Fri: "Пт", Sat: "Сб", Sun: "Нд",
-};
-
-function formatLocalDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function parseLocalDate(iso: string): Date {
-  const [y, m, d] = iso.split("-").map(Number);
-  return new Date(y, m - 1, d);
-}
-
-function addDays(d: Date, days: number): Date {
-  const next = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  next.setDate(next.getDate() + days);
-  return next;
-}
-
-type HeatmapRange = "week" | "month" | "6months";
-
-const HEATMAP_RANGE_CONFIG: Record<HeatmapRange, { days: number; label: string; shortLabel: string }> = {
-  week: { days: 7, label: "Тиждень", shortLabel: "7 дн." },
-  month: { days: 30, label: "Місяць", shortLabel: "30 дн." },
-  "6months": { days: 182, label: "6 місяців", shortLabel: "6 міс." },
-};
-
-const HEATMAP_DAY_LABELS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
-const HEATMAP_MONTH_LABELS = ["Січ", "Лют", "Бер", "Кві", "Тра", "Чер", "Лип", "Сер", "Вер", "Жов", "Лис", "Гру"];
-
-interface HeatmapCell {
-  date: string | null;
-  intensity: number;
-  completions: number;
-  variant: "active" | "padding" | "future";
-}
-
-interface HeatmapModel {
-  cells: HeatmapCell[];
-  weekCount: number;
-  monthLabels: { label: string; column: number }[];
-  startDate: string;
-  endDate: string;
-  totalCompletions: number;
-  activeDays: number;
-}
-
-function buildHeatmapModel(
-  dateCounts: Record<string, number>,
-  endDateStr: string,
-  range: HeatmapRange,
-): HeatmapModel {
-  const endDate = parseLocalDate(endDateStr);
-  const rangeDays = HEATMAP_RANGE_CONFIG[range].days;
-  const startDate = addDays(endDate, -(rangeDays - 1));
-  const startDateStr = formatLocalDate(startDate);
-
-  const countsInRange: number[] = [];
-  Object.entries(dateCounts).forEach(([date, count]) => {
-    if (date >= startDateStr && date <= endDateStr) {
-      countsInRange.push(count);
-    }
-  });
-  const maxCount = Math.max(...countsInRange, 1);
-
-  const makeActiveCell = (dateStr: string): HeatmapCell => {
-    const completions = dateCounts[dateStr] || 0;
-    let intensity = 0;
-    if (completions > 0) {
-      intensity =
-        maxCount <= 4
-          ? Math.min(4, completions)
-          : Math.min(4, Math.max(1, Math.round((completions / maxCount) * 4)));
-    }
-    return { date: dateStr, intensity, completions, variant: "active" };
-  };
-
-  let cells: HeatmapCell[] = [];
-  let totalCompletions = 0;
-  let activeDays = 0;
-
-  if (range === "week") {
-    for (let i = 0; i < 7; i += 1) {
-      const cursor = addDays(startDate, i);
-      const dateStr = formatLocalDate(cursor);
-      const cell = makeActiveCell(dateStr);
-      totalCompletions += cell.completions;
-      if (cell.completions > 0) activeDays += 1;
-      cells.push(cell);
-    }
-    return {
-      cells,
-      weekCount: 1,
-      monthLabels: [],
-      startDate: startDateStr,
-      endDate: endDateStr,
-      totalCompletions,
-      activeDays,
-    };
-  }
-
-  const startDay = startDate.getDay();
-  const mondayOffset = startDay === 0 ? -6 : 1 - startDay;
-  const gridStart = addDays(startDate, mondayOffset);
-
-  const endDay = endDate.getDay();
-  const sundayOffset = endDay === 0 ? 0 : 7 - endDay;
-  const gridEnd = addDays(endDate, sundayOffset);
-
-  for (let cursor = gridStart; cursor <= gridEnd; cursor = addDays(cursor, 1)) {
-    const dateStr = formatLocalDate(cursor);
-    const inRange = dateStr >= startDateStr && dateStr <= endDateStr;
-    const isFuture = dateStr > endDateStr;
-
-    if (inRange) {
-      const cell = makeActiveCell(dateStr);
-      totalCompletions += cell.completions;
-      if (cell.completions > 0) activeDays += 1;
-      cells.push(cell);
-    } else if (isFuture) {
-      cells.push({ date: dateStr, intensity: 0, completions: 0, variant: "future" });
-    } else {
-      cells.push({ date: null, intensity: 0, completions: 0, variant: "padding" });
-    }
-  }
-
-  const weekCount = Math.ceil(cells.length / 7);
-  const monthLabels: { label: string; column: number }[] = [];
-  let lastMonth = -1;
-
-  for (let col = 0; col < weekCount; col += 1) {
-    for (let row = 0; row < 7; row += 1) {
-      const cell = cells[col * 7 + row];
-      if (!cell?.date) continue;
-      const month = parseLocalDate(cell.date).getMonth();
-      if (month !== lastMonth) {
-        monthLabels.push({ label: HEATMAP_MONTH_LABELS[month], column: col });
-        lastMonth = month;
-        break;
-      }
-    }
-  }
-
-  return {
-    cells,
-    weekCount,
-    monthLabels,
-    startDate: startDateStr,
-    endDate: endDateStr,
-    totalCompletions,
-    activeDays,
-  };
-}
-
-function parseApiError(detail: unknown): string {
-  if (typeof detail === "string") return detail;
-  if (Array.isArray(detail)) {
-    const fieldLabels: Record<string, string> = {
-      password: "Пароль",
-      username: "Ім'я користувача",
-      email: "Email",
-    };
-    return detail
-      .map((item: { msg?: string; loc?: (string | number)[] }) => {
-        const field = String(item.loc?.slice(-1)[0] ?? "поле");
-        const label = fieldLabels[field] ?? field;
-        return `${label}: ${item.msg ?? "невалідне значення"}`;
-      })
-      .join(". ");
-  }
-  return "Помилка сервера. Спробуйте пізніше.";
-}
-
-function categoryLabel(cat: string): string {
-  if (cat === "study") return "📚 Навчання";
-  if (cat === "sport") return "🏃 Спорт";
-  if (cat === "sleep") return "😴 Сон";
-  if (cat === "nutrition") return "🍎 Харчування";
-  return "🧩 Інше";
-}
-
-// ── Types ────────────────────────────────────────────────────────────────────
 interface User {
   id: number;
   username: string;
@@ -223,18 +35,20 @@ interface HabitLog {
   is_completed: boolean;
 }
 
+interface UpcomingDueDate {
+  habit_id: number;
+  title: string;
+  due_date: string;
+  frequency: string;
+}
+
 interface WeeklyReport {
   habit_counts: { total: number; daily: number; weekly: number };
   completed_this_week: number;
   average_streak: number;
   longest_streak: number;
   completions_by_day: Record<string, number>;
-  upcoming_due_dates: {
-    habit_id: number;
-    title: string;
-    due_date: string;
-    frequency: string;
-  }[];
+  upcoming_due_dates: UpcomingDueDate[];
   this_week_completions: number;
   last_week_completions: number;
   growth_rate: number;
@@ -270,36 +84,34 @@ interface FloatingXP {
   amount: number;
 }
 
-// ── Custom SVG Icons ─────────────────────────────────────────────────────────
-const PlusIcon = () => (
-  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
-    <line x1="12" y1="5" x2="12" y2="19" />
-    <line x1="5" y1="12" x2="19" y2="12" />
-  </svg>
-);
+// ── Helpers ────────────────────────────────────────────────────────────────
+function formatLocalDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
-const TrashIcon = () => (
-  <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="3 6 5 6 21 6" />
-    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-    <line x1="10" y1="11" x2="10" y2="17" />
-    <line x1="14" y1="11" x2="14" y2="17" />
-  </svg>
-);
+function parseApiError(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const fieldLabels: Record<string, string> = {
+      password: "Пароль",
+      username: "Ім'я користувача",
+      email: "Email",
+    };
+    return detail
+      .map((item: { msg?: string; loc?: (string | number)[] }) => {
+        const field = String(item.loc?.slice(-1)[0] ?? "поле");
+        const label = fieldLabels[field] ?? field;
+        return `${label}: ${item.msg ?? "невалідне значення"}`;
+      })
+      .join(". ");
+  }
+  return "Помилка сервера. Спробуйте пізніше.";
+}
 
-const EditIcon = () => (
-  <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-    <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-  </svg>
-);
-
-const CheckIcon = () => (
-  <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="3" fill="none" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="20 6 9 17 4 12" />
-  </svg>
-);
-
+// ── Icons ──────────────────────────────────────────────────────────────────
 const HomeIcon = () => (
   <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
     <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
@@ -325,7 +137,6 @@ const TrophyIcon = () => (
   </svg>
 );
 
-// ── Application Root ─────────────────────────────────────────────────────────
 export default function App() {
   // Auth state
   const [token, setToken] = useState<string | null>(localStorage.getItem('access_token'));
@@ -347,12 +158,6 @@ export default function App() {
   const [showHabitModal, setShowHabitModal] = useState(false);
   const [editingHabit, setEditingHabit] = useState<Habit | null>(null);
   const [showWeeklyReport, setShowWeeklyReport] = useState(false);
-  const [heatmapRange, setHeatmapRange] = useState<HeatmapRange>("6months");
-  
-  // Form States
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
-  const [authError, setAuthError] = useState('');
-  const [authForm, setAuthForm] = useState({ username: '', email: '', password: '' });
   
   const [habitForm, setHabitForm] = useState({
     title: '',
@@ -380,7 +185,6 @@ export default function App() {
     };
     const response = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
     if (response.status === 401) {
-      // Session expired
       localStorage.removeItem('access_token');
       setToken(null);
       setUser(null);
@@ -419,13 +223,11 @@ export default function App() {
   const loadData = useCallback(async () => {
     if (!token) return;
     try {
-      // 1. Fetch habits
       const resHabits = await fetchWithAuth("/api/habits/");
       if (resHabits && resHabits.ok) {
         const hList: Habit[] = await resHabits.json();
         setHabits(hList);
         
-        // 2. Fetch logs for each habit
         const logMap: Record<number, HabitLog[]> = {};
         await Promise.all(
           hList.map(async (habit) => {
@@ -439,16 +241,12 @@ export default function App() {
         setHabitLogs(logMap);
       }
 
-      // 3. Fetch analytics stats
       const resStats = await fetchWithAuth("/api/stats/");
       if (resStats && resStats.ok) {
         const s: Stats = await resStats.json();
-        
-        // Trigger level up animation if level increased
         if (stats && s.level > stats.level) {
           triggerToast(`Рівень підвищено! Ви досягли рівня ${s.level}! 🌟`, "success");
         }
-        
         setStats(s);
       }
     } catch (err) {
@@ -456,7 +254,6 @@ export default function App() {
     }
   }, [token, fetchWithAuth, stats]);
 
-  // Load user info on mount/token change
   useEffect(() => {
     if (token) {
       fetchEffectiveDate();
@@ -466,51 +263,10 @@ export default function App() {
   }, [token]);
 
   // ── Authentication Handlers ─────────────────────────────────────────────────
-  const handleAuthSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError('');
-    try {
-      if (authMode === 'register') {
-        const res = await fetch(`${API_BASE}/api/auth/register`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            username: authForm.username,
-            email: authForm.email,
-            password: authForm.password
-          })
-        });
-        if (!res.ok) {
-          const body = await res.json();
-          throw new Error(parseApiError(body.detail));
-        }
-        // Redirect to login automatically
-        setAuthMode('login');
-        triggerToast("Акаунт створено успішно! Будь ласка, увійдіть.", "success");
-      } else {
-        // OAuth2 Password Grant format (form urlencoded)
-        const params = new URLSearchParams();
-        params.append('username', authForm.email);
-        params.append('password', authForm.password);
-
-        const res = await fetch(`${API_BASE}/api/auth/login`, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: params
-        });
-        if (!res.ok) {
-          const body = await res.json();
-          throw new Error(parseApiError(body.detail) || "Невірний email або пароль");
-        }
-        const data = await res.json();
-        localStorage.setItem('access_token', data.access_token);
-        setToken(data.access_token);
-        fetchEffectiveDate();
-        triggerToast("Вхід виконано! Ласкаво просимо в HabitForge.", "success");
-      }
-    } catch (err: any) {
-      setAuthError(err.message || "Помилка сервера. Спробуйте пізніше.");
-    }
+  const handleLoginSuccess = (newToken: string) => {
+    localStorage.setItem('access_token', newToken);
+    setToken(newToken);
+    triggerToast("Вхід виконано! Ласкаво просимо в HabitForge.", "success");
   };
 
   const handleLogout = () => {
@@ -553,13 +309,13 @@ export default function App() {
   };
 
   // ── Feedback Animations ─────────────────────────────────────────────────────
-  const triggerToast = (message: string, type = "success") => {
+  const triggerToast = useCallback((message: string, type = "success") => {
     const id = Date.now();
     setToasts((prev) => [...prev, { id, message, type }]);
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 4000);
-  };
+  }, []);
 
   const playFloatingXP = (x: number, y: number, amount: number) => {
     const id = Date.now();
@@ -569,7 +325,7 @@ export default function App() {
     }, 1200);
   };
 
-  // ── Habit Execution Completion Toggles ──────────────────────────────────────
+  // ── Habit Completions Toggles ───────────────────────────────────────────────
   const toggleHabitCompletion = async (habit: Habit, e: React.MouseEvent) => {
     const todayStr = effectiveDate;
     const logs = habitLogs[habit.id] || [];
@@ -577,7 +333,6 @@ export default function App() {
     const wasCompleted = todayLog ? todayLog.is_completed : false;
     const isCompleted = !wasCompleted;
 
-    // Trigger visual float indicator at click position
     playFloatingXP(e.clientX, e.clientY, habit.frequency === 'weekly' ? 30 : 10);
 
     try {
@@ -589,7 +344,6 @@ export default function App() {
         })
       });
       if (response && response.ok) {
-        // Optimistic / clean local updates
         const updatedLog: HabitLog = await response.json();
         setHabitLogs((prev) => {
           const list = prev[habit.id] || [];
@@ -603,7 +357,6 @@ export default function App() {
           }
         });
         
-        // Reload global statistics immediately to update XP, streaks, level, and tree
         const resStats = await fetchWithAuth("/api/stats/");
         if (resStats && resStats.ok) {
           const s = await resStats.json();
@@ -644,7 +397,6 @@ export default function App() {
     e.preventDefault();
     try {
       if (editingHabit) {
-        // Update habit
         const response = await fetchWithAuth(`/api/habits/${editingHabit.id}`, {
           method: "PUT",
           body: JSON.stringify(habitForm)
@@ -655,7 +407,6 @@ export default function App() {
           triggerToast("Звичку успішно оновлено!", "success");
         }
       } else {
-        // Create habit
         const response = await fetchWithAuth("/api/habits/", {
           method: "POST",
           body: JSON.stringify(habitForm)
@@ -695,292 +446,23 @@ export default function App() {
     return habits.filter((h) => h.category === focusMode);
   }, [habits, focusMode]);
 
-  // Check if habit is completed today
   const isHabitCompletedToday = (habitId: number) => {
     const logs = habitLogs[habitId] || [];
     return logs.some((l) => l.execution_date === effectiveDate && l.is_completed);
   };
 
-  // ── Heatmap (GitHub-style, Mon–Sun columns, local dates) ───────────────────
-  const heatmapModel = useMemo((): HeatmapModel => {
-    const dateCounts: Record<string, number> = {};
-    habits.forEach((habit) => {
-      if (focusMode !== "all" && habit.category !== focusMode) return;
-      const logs = habitLogs[habit.id] || [];
-      logs.forEach((log) => {
-        if (log.is_completed) {
-          dateCounts[log.execution_date] = (dateCounts[log.execution_date] || 0) + 1;
-        }
-      });
-    });
-    return buildHeatmapModel(dateCounts, effectiveDate, heatmapRange);
-  }, [habits, habitLogs, focusMode, effectiveDate, heatmapRange]);
-
-  // ── Render SVG Progress Tree ────────────────────────────────────────────────
-  const renderEcosystemTree = () => {
-    const stage = stats ? stats.tree_stage : 0;
-    
-    // Stages: 0 = Seed, 1 = Sprout, 2 = Sapling, 3 = Young Tree, 4 = Mature, 5 = Bloom
-    return (
-      <svg viewBox="0 0 200 200" className="tree-canvas-svg">
-        <defs>
-          <linearGradient id="trunkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#78350f" />
-            <stop offset="100%" stopColor="#451a03" />
-          </linearGradient>
-          <linearGradient id="leafGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#10b981" />
-            <stop offset="100%" stopColor="#047857" />
-          </linearGradient>
-          <linearGradient id="flowerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#f43f5e" />
-            <stop offset="100%" stopColor="#be123c" />
-          </linearGradient>
-          <linearGradient id="skyGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stopColor="var(--accent-soft)" stopOpacity="0.8" />
-            <stop offset="100%" stopColor="transparent" />
-          </linearGradient>
-        </defs>
-
-        {/* Ambient Sky Area background */}
-        <circle cx="100" cy="100" r="90" fill="url(#skyGrad)" />
-
-        {/* Ground */}
-        <path d="M20 170 C 60 160, 140 160, 180 170 L 180 190 L 20 190 Z" fill="#1e293b" />
-        <path d="M20 170 C 60 160, 140 160, 180 170" stroke="#10b981" strokeWidth="3" fill="none" opacity="0.6" />
-
-        {/* Stage 0: Seed in Ground */}
-        {stage === 0 && (
-          <g>
-            {/* Glowing spot */}
-            <circle cx="100" cy="165" r="8" fill="var(--accent-primary)" opacity="0.4" className="tree-leaf" />
-            <ellipse cx="100" cy="166" rx="3" ry="5" fill="#f59e0b" transform="rotate(15 100 166)" />
-          </g>
-        )}
-
-        {/* Stage 1: Sprout */}
-        {stage >= 1 && (
-          <g className="tree-branch">
-            {/* Stem */}
-            <path d="M100 170 Q 98 145, 102 135" stroke="url(#trunkGrad)" strokeWidth="4" fill="none" strokeLinecap="round" />
-            
-            {/* Sprout Leaves */}
-            {stage === 1 && (
-              <g>
-                <path d="M102 135 C 108 130, 115 132, 118 138 C 112 140, 106 138, 102 135" fill="url(#leafGrad)" className="tree-leaf" />
-                <path d="M98 135 C 92 130, 85 132, 82 138 C 88 140, 94 138, 98 135" fill="url(#leafGrad)" className="tree-leaf" />
-              </g>
-            )}
-          </g>
-        )}
-
-        {/* Stage 2: Sapling */}
-        {stage >= 2 && (
-          <g className="tree-branch">
-            {/* Extended Trunk */}
-            <path d="M100 170 Q 96 130, 104 110" stroke="url(#trunkGrad)" strokeWidth="6" fill="none" strokeLinecap="round" />
-            {/* Small branches */}
-            <path d="M100 135 Q 85 125, 80 120" stroke="url(#trunkGrad)" strokeWidth="3" fill="none" strokeLinecap="round" />
-            <path d="M101 125 Q 115 118, 122 112" stroke="url(#trunkGrad)" strokeWidth="3" fill="none" strokeLinecap="round" />
-
-            {/* Leaves */}
-            {stage === 2 && (
-              <g>
-                {/* Branch leaves */}
-                <circle cx="80" cy="120" r="8" fill="url(#leafGrad)" className="tree-leaf" />
-                <circle cx="122" cy="112" r="8" fill="url(#leafGrad)" className="tree-leaf" />
-                <circle cx="104" cy="110" r="10" fill="url(#leafGrad)" className="tree-leaf" />
-              </g>
-            )}
-          </g>
-        )}
-
-        {/* Stage 3: Young Tree */}
-        {stage >= 3 && (
-          <g className="tree-branch">
-            {/* Trunk */}
-            <path d="M100 170 Q 94 110, 100 80" stroke="url(#trunkGrad)" strokeWidth="8" fill="none" strokeLinecap="round" />
-            {/* Branches */}
-            <path d="M97 130 Q 75 110, 70 95" stroke="url(#trunkGrad)" strokeWidth="5" fill="none" strokeLinecap="round" />
-            <path d="M100 115 Q 125 95, 130 85" stroke="url(#trunkGrad)" strokeWidth="5" fill="none" strokeLinecap="round" />
-            <path d="M100 95 Q 85 80, 85 70" stroke="url(#trunkGrad)" strokeWidth="4" fill="none" strokeLinecap="round" />
-
-            {/* Foliage spheres */}
-            {stage === 3 && (
-              <g>
-                <circle cx="70" cy="95" r="15" fill="url(#leafGrad)" opacity="0.9" className="tree-leaf" />
-                <circle cx="130" cy="85" r="16" fill="url(#leafGrad)" opacity="0.9" className="tree-leaf" />
-                <circle cx="85" cy="70" r="14" fill="url(#leafGrad)" opacity="0.9" className="tree-leaf" />
-                <circle cx="100" cy="80" r="18" fill="url(#leafGrad)" opacity="0.95" className="tree-leaf" />
-              </g>
-            )}
-          </g>
-        )}
-
-        {/* Stage 4: Mature Tree */}
-        {stage >= 4 && (
-          <g className="tree-branch">
-            {/* Thick Trunk */}
-            <path d="M100 170 Q 92 100, 100 65" stroke="url(#trunkGrad)" strokeWidth="11" fill="none" strokeLinecap="round" />
-            
-            {/* Complex Branch System */}
-            <path d="M96 125 Q 65 105, 55 90" stroke="url(#trunkGrad)" strokeWidth="6" fill="none" strokeLinecap="round" />
-            <path d="M102 110 Q 135 90, 145 75" stroke="url(#trunkGrad)" strokeWidth="6" fill="none" strokeLinecap="round" />
-            <path d="M97 90 Q 75 75, 72 55" stroke="url(#trunkGrad)" strokeWidth="5" fill="none" strokeLinecap="round" />
-            <path d="M101 80 Q 120 65, 125 50" stroke="url(#trunkGrad)" strokeWidth="4" fill="none" strokeLinecap="round" />
-            
-            {/* Dense Foliage spheres */}
-            {stage === 4 && (
-              <g className="tree-leaf">
-                <circle cx="55" cy="90" r="22" fill="url(#leafGrad)" opacity="0.9" />
-                <circle cx="145" cy="75" r="24" fill="url(#leafGrad)" opacity="0.9" />
-                <circle cx="72" cy="55" r="20" fill="url(#leafGrad)" opacity="0.9" />
-                <circle cx="125" cy="50" r="18" fill="url(#leafGrad)" opacity="0.9" />
-                <circle cx="100" cy="60" r="26" fill="url(#leafGrad)" opacity="0.95" />
-              </g>
-            )}
-          </g>
-        )}
-
-        {/* Stage 5: Blooming Ecosystem (Flowers, clouds, butterflies, floating petals) */}
-        {stage === 5 && (
-          <g>
-            {/* Base Mature Tree Foliage */}
-            <g className="tree-leaf">
-              <circle cx="55" cy="90" r="23" fill="url(#leafGrad)" opacity="0.85" />
-              <circle cx="145" cy="75" r="25" fill="url(#leafGrad)" opacity="0.85" />
-              <circle cx="72" cy="55" r="21" fill="url(#leafGrad)" opacity="0.85" />
-              <circle cx="125" cy="50" r="19" fill="url(#leafGrad)" opacity="0.85" />
-              <circle cx="100" cy="60" r="28" fill="url(#leafGrad)" opacity="0.9" />
-            </g>
-
-            {/* Red Blooming Flowers */}
-            <g className="tree-leaf">
-              <circle cx="65" cy="85" r="4" fill="url(#flowerGrad)" />
-              <circle cx="135" cy="70" r="5" fill="url(#flowerGrad)" />
-              <circle cx="100" cy="50" r="4.5" fill="url(#flowerGrad)" />
-              <circle cx="80" cy="55" r="4" fill="url(#flowerGrad)" />
-              <circle cx="120" cy="55" r="5" fill="url(#flowerGrad)" />
-              <circle cx="148" cy="82" r="4" fill="url(#flowerGrad)" />
-            </g>
-
-            {/* Butterflies & Clouds */}
-            <g opacity="0.8" className="tree-leaf">
-              {/* Cloud Left */}
-              <path d="M15 45 a 6 6 0 0 1 12 0 a 8 8 0 0 1 14 2 a 6 6 0 0 1 -2 11 L 13 58 A 6 6 0 0 1 15 45 Z" fill="white" opacity="0.25" />
-              {/* Cloud Right */}
-              <path d="M155 35 a 5 5 0 0 1 10 0 a 7 7 0 0 1 12 2 a 5 5 0 0 1 -2 9 L 153 46 A 5 5 0 0 1 155 35 Z" fill="white" opacity="0.2" />
-
-              {/* Butterflies */}
-              <path d="M45 80 L 48 83 L 45 86 Z M48 83 L 51 80 L 51 86 Z" fill="#f59e0b" />
-              <path d="M160 100 L 163 103 L 160 106 Z M163 103 L 166 100 L 166 106 Z" fill="var(--accent-primary)" />
-            </g>
-          </g>
-        )}
-      </svg>
-    );
-  };
-
   // ── Render ─────────────────────────────────────────────────────────────────
-
-  // Render Auth screen if not logged in
   if (!token) {
     return (
-      <div className="auth-wrapper">
-        <div className="auth-card">
-          <div className="brand" style={{ justifyContent: 'center', marginBottom: '30px' }}>
-            <div className="brand-icon">HF</div>
-            <div className="brand-name">HabitForge</div>
-          </div>
-          
-          <h2 style={{ color: 'var(--text-heading)', textAlign: 'center', marginBottom: '8px' }}>
-            {authMode === 'login' ? 'З поверненням!' : 'Створіть акаунт'}
-          </h2>
-          <p style={{ color: 'var(--text-muted)', textAlign: 'center', fontSize: '14px', marginBottom: '30px' }}>
-            {authMode === 'login' 
-              ? 'Авторизуйтесь для продовження відстеження.' 
-              : 'Розпочніть будувати корисні звички сьогодні.'
-            }
-          </p>
-
-          {authError && (
-            <div style={{ 
-              background: 'rgba(239, 68, 68, 0.1)', 
-              color: '#ef4444', 
-              padding: '12px 16px', 
-              borderRadius: 'var(--radius-sm)', 
-              fontSize: '14px', 
-              fontWeight: 500,
-              marginBottom: '20px'
-            }}>
-              ⚠️ {authError}
-            </div>
-          )}
-
-          <form onSubmit={handleAuthSubmit}>
-            {authMode === 'register' && (
-              <div className="form-group">
-                <label className="form-label">Ім'я користувача</label>
-                <input 
-                  type="text" 
-                  className="form-input" 
-                  required
-                  placeholder="john_doe"
-                  value={authForm.username}
-                  onChange={(e) => setAuthForm({ ...authForm, username: e.target.value })}
-                />
-              </div>
-            )}
-
-            <div className="form-group">
-              <label className="form-label">{authMode === 'login' ? 'Email або Ім\'я' : 'Електронна пошта'}</label>
-              <input 
-                type={authMode === 'register' ? 'email' : 'text'} 
-                className="form-input" 
-                required
-                placeholder={authMode === 'register' ? 'john@example.com' : 'email@example.com'}
-                value={authForm.email}
-                onChange={(e) => setAuthForm({ ...authForm, email: e.target.value })}
-              />
-            </div>
-
-            <div className="form-group" style={{ marginBottom: '30px' }}>
-              <label className="form-label">Пароль</label>
-              <input 
-                type="password" 
-                className="form-input" 
-                required
-                minLength={authMode === 'register' ? 8 : undefined}
-                maxLength={authMode === 'register' ? 128 : undefined}
-                placeholder="••••••••"
-                value={authForm.password}
-                onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })}
-              />
-              {authMode === 'register' && (
-                <p className="form-hint">8–128 символів. Літери, цифри та спецсимволи дозволені.</p>
-              )}
-            </div>
-
-            <button type="submit" className="primary-btn" style={{ width: '100%', justifyContent: 'center', padding: '14px' }}>
-              {authMode === 'login' ? 'Увійти' : 'Зареєструватися'}
-            </button>
-          </form>
-
-          <p style={{ textAlign: 'center', marginTop: '24px', fontSize: '14px', color: 'var(--text-muted)' }}>
-            {authMode === 'login' ? 'Немає акаунту? ' : 'Вже маєте акаунт? '}
-            <span 
-              onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthError(''); }}
-              style={{ color: 'var(--accent-primary)', fontWeight: 700, cursor: 'pointer', textDecoration: 'underline' }}
-            >
-              {authMode === 'login' ? 'Зареєструватися' : 'Увійти'}
-            </span>
-          </p>
-        </div>
-      </div>
+      <AuthScreen
+        apiBase={API_BASE}
+        onLoginSuccess={handleLoginSuccess}
+        triggerToast={triggerToast}
+        parseApiError={parseApiError}
+      />
     );
   }
 
-  // Main Dashboard Interface (Authenticated)
   return (
     <div className="app-container">
       {/* Dynamic particles container */}
@@ -1049,446 +531,28 @@ export default function App() {
       {/* Main Content Area */}
       <main className="main-content">
         
-        {/* TAB 1: DASHBOARD */}
         {activeTab === 'dashboard' && (
-          <>
-            <header className="dashboard-header">
-              <div className="dashboard-title">
-                <h1>Мій Простір Звичок</h1>
-                <p>
-                  Вітаємо назад! Слідкуйте за своїми щоденними рутинами.
-                  {dateOverridden && (
-                    <span className="date-override-badge"> 📅 Тестова дата: {effectiveDate}</span>
-                  )}
-                </p>
-              </div>
-
-              {/* Mode Selector */}
-              <div className="mode-selector">
-                <button className={`mode-btn ${focusMode === 'all' ? 'active' : ''}`} onClick={() => setFocusMode('all')}>Всі</button>
-                <button className={`mode-btn ${focusMode === 'study' ? 'active' : ''}`} onClick={() => setFocusMode('study')}>📚 Навчання</button>
-                <button className={`mode-btn ${focusMode === 'sport' ? 'active' : ''}`} onClick={() => setFocusMode('sport')}>🏃 Спорт</button>
-                <button className={`mode-btn ${focusMode === 'sleep' ? 'active' : ''}`} onClick={() => setFocusMode('sleep')}>😴 Сон</button>
-                <button className={`mode-btn ${focusMode === 'nutrition' ? 'active' : ''}`} onClick={() => setFocusMode('nutrition')}>🍎 Харчування</button>
-              </div>
-            </header>
-
-            {/* Overall Gamification XP card */}
-            {stats && (
-              <div className="card stats-summary-card">
-                <div className="xp-level-row">
-                  <div className="level-title">
-                    <span className="level-label">Ваш Поточний Рівень</span>
-                    <span className="username" style={{ fontSize: '20px', fontWeight: 800 }}>Рівень {stats.level}</span>
-                  </div>
-                  <div className="level-badge">{stats.level}</div>
-                </div>
-
-                <div className="xp-progress-container">
-                  <div className="xp-progress-fill" style={{ width: `${stats.xp_progress}%` }}></div>
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: 'var(--text-muted)' }}>
-                  <span>Етап: <b>{stats.tree_stage_name}</b></span>
-                  <span>{stats.total_xp} XP всього ({stats.xp_progress}/100 XP до наступного рівня)</span>
-                </div>
-              </div>
-            )}
-
-            {/* Metrics cards row */}
-            {stats && (
-              <div className="metrics-row">
-                <div className="card metric-card">
-                  <div className="metric-icon-box">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-                  </div>
-                  <div className="metric-data">
-                    <span className="metric-value">{stats.streak_current} дн.</span>
-                    <span className="metric-label">Поточна серія 🔥</span>
-                  </div>
-                </div>
-
-                <div className="card metric-card">
-                  <div className="metric-icon-box" style={{ color: '#ea580c' }}>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
-                  </div>
-                  <div className="metric-data">
-                    <span className="metric-value">{stats.streak_longest} дн.</span>
-                    <span className="metric-label">Найкраща серія 🏆</span>
-                  </div>
-                </div>
-
-                <div className="card metric-card">
-                  <div className="metric-icon-box" style={{ color: '#10b981' }}>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-                  </div>
-                  <div className="metric-data">
-                    <span className="metric-value">{stats.completion_rate}%</span>
-                    <span className="metric-label">Успішність 📈</span>
-                  </div>
-                </div>
-
-                <div className="card metric-card" style={{ cursor: 'pointer' }} onClick={() => setShowWeeklyReport(true)}>
-                  <div className="metric-icon-box" style={{ color: '#3b82f6' }}>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                  </div>
-                  <div className="metric-data">
-                    <span className="metric-value" style={{ color: 'var(--accent-primary)', textDecoration: 'underline' }}>Звіт 📋</span>
-                    <span className="metric-label">Цей тиждень: {stats.weekly_report.this_week_completions}</span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Dashboard grid (Tree + Heatmap & List) */}
-            <div className="dashboard-grid">
-              
-              {/* LEFT COLUMN: Heatmap + Habits List */}
-              <div className="dashboard-column">
-                
-                {/* Heatmap Card */}
-                <div className="card heatmap-card">
-                  <div className="heatmap-card-header">
-                    <div className="heatmap-card-title">
-                      <h3 className="card-title">Теплова карта активності</h3>
-                      <p className="heatmap-subtitle">
-                        {focusMode === "all" ? "Усі звички" : `Фокус: ${focusMode}`}
-                        {" · "}
-                        {heatmapModel.startDate} — {heatmapModel.endDate}
-                      </p>
-                    </div>
-                    <div className="heatmap-range-selector" role="group" aria-label="Період heatmap">
-                      {(Object.keys(HEATMAP_RANGE_CONFIG) as HeatmapRange[]).map((key) => (
-                        <button
-                          key={key}
-                          type="button"
-                          className={`heatmap-range-btn ${heatmapRange === key ? "active" : ""}`}
-                          onClick={() => setHeatmapRange(key)}
-                        >
-                          {HEATMAP_RANGE_CONFIG[key].label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="heatmap-summary">
-                    <span><b>{heatmapModel.totalCompletions}</b> виконань</span>
-                    <span><b>{heatmapModel.activeDays}</b> активних днів</span>
-                  </div>
-
-                  <div className="heatmap-layout" data-range={heatmapRange}>
-                    <div className="heatmap-day-labels" aria-hidden="true">
-                      {HEATMAP_DAY_LABELS.map((label, idx) => (
-                        <span key={label} className={idx % 2 === 0 ? "is-visible" : ""}>
-                          {label}
-                        </span>
-                      ))}
-                    </div>
-
-                    <div className="heatmap-scroll-container">
-                      {heatmapRange !== "week" && heatmapModel.monthLabels.length > 0 && (
-                        <div
-                          className="heatmap-month-row"
-                          style={{ gridTemplateColumns: `repeat(${heatmapModel.weekCount}, var(--heatmap-cell-size))` }}
-                        >
-                          {heatmapModel.monthLabels.map((m) => (
-                            <span
-                              key={`${m.label}-${m.column}`}
-                              className="heatmap-month-label"
-                              style={{ gridColumn: `${m.column + 1}` }}
-                            >
-                              {m.label}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-
-                      <div
-                        className="heatmap-grid"
-                        data-range={heatmapRange}
-                        style={{ gridTemplateColumns: `repeat(${heatmapModel.weekCount}, var(--heatmap-cell-size))` }}
-                      >
-                        {heatmapModel.cells.map((cell, idx) => (
-                          <div
-                            key={`${cell.date ?? "pad"}-${idx}`}
-                            className={`heatmap-cell heatmap-cell--${cell.variant}`}
-                            data-count={cell.variant === "active" ? cell.intensity : undefined}
-                            aria-label={
-                              cell.date
-                                ? `${cell.date}: ${cell.completions} виконань`
-                                : undefined
-                            }
-                          >
-                            {cell.date && (
-                              <span className="tooltip">
-                                {cell.date}: {cell.completions}{" "}
-                                {cell.completions === 1 ? "виконання" : "виконань"}
-                              </span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="heatmap-labels">
-                    <span>Менше</span>
-                    <div className="heatmap-legend">
-                      {[0, 1, 2, 3, 4].map((level) => (
-                        <div key={level} className="heatmap-cell" data-count={level} aria-hidden="true" />
-                      ))}
-                    </div>
-                    <span>Більше</span>
-                  </div>
-                </div>
-
-                {/* Habits List Section */}
-                <div className="habits-section">
-                  <div className="section-header-row">
-                    <h2 className="section-title">
-                      Мої Звички ({filteredHabits.length})
-                    </h2>
-                    <button className="primary-btn" onClick={openCreateModal}>
-                      <PlusIcon /> Додати звичку
-                    </button>
-                  </div>
-
-                  {filteredHabits.length === 0 ? (
-                    <div className="card" style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
-                      📝 Не знайдено жодної звички у цій категорії. Натисніть кнопку вище, щоб створити її!
-                    </div>
-                  ) : (
-                    <div className="habits-grid">
-                      {filteredHabits.map((habit) => {
-                        const isDoneToday = isHabitCompletedToday(habit.id);
-                        return (
-                          <div key={habit.id} className="habit-card">
-                            <div className="habit-details">
-                              <span className={`habit-category-tag tag-${habit.category}`}>
-                                {habit.category}
-                              </span>
-                              <div className="habit-info-text">
-                                <span className="habit-title" style={{ textDecoration: isDoneToday ? 'line-through' : 'none', opacity: isDoneToday ? 0.6 : 1 }}>
-                                  {habit.title}
-                                </span>
-                                {habit.description && (
-                                  <span className="habit-desc">{habit.description}</span>
-                                )}
-                                <span className="habit-frequency-indicator">
-                                  🔄 Періодичність: <b>{habit.frequency === 'daily' ? 'Щодня' : 'Щотижня'}</b>
-                                </span>
-                              </div>
-                            </div>
-
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
-                              <button 
-                                className={`habit-checkbox ${isDoneToday ? 'checked' : ''}`}
-                                onClick={(e) => toggleHabitCompletion(habit, e)}
-                                title="Позначити виконаною на сьогодні"
-                              >
-                                {isDoneToday && <CheckIcon />}
-                              </button>
-
-                              <div className="habit-actions">
-                                <button className="secondary-btn" style={{ padding: '8px' }} onClick={() => openEditModal(habit)}>
-                                  <EditIcon />
-                                </button>
-                                <button className="danger-btn" onClick={() => handleDeleteHabit(habit.id)}>
-                                  <TrashIcon />
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-              </div>
-
-              {/* RIGHT COLUMN: Ecosystem Progress Tree */}
-              <div className="card tree-card">
-                <div className="card-title" style={{ width: '100%', justifyContent: 'center' }}>
-                  <span>Екосистема Активності</span>
-                </div>
-                
-                <div className="tree-container">
-                  {renderEcosystemTree()}
-                </div>
-
-                <div className="tree-label-overlay">
-                  <h3>{stats ? stats.tree_stage_name : "Насіння"}</h3>
-                  <p style={{ marginTop: '6px' }}>
-                    {stats && stats.total_xp >= 1500 
-                      ? "Вітаємо! Ваша екосистема повністю розквітла! 🌸" 
-                      : "Регулярно відмічайте звички, щоб допомогти дереву рости."
-                    }
-                  </p>
-                </div>
-              </div>
-
-            </div>
-          </>
+          <DashboardTab
+            stats={stats}
+            dateOverridden={dateOverridden}
+            effectiveDate={effectiveDate}
+            focusMode={focusMode}
+            setFocusMode={setFocusMode}
+            filteredHabits={filteredHabits}
+            isHabitCompletedToday={isHabitCompletedToday}
+            toggleHabitCompletion={toggleHabitCompletion}
+            openCreateModal={openCreateModal}
+            openEditModal={openEditModal}
+            handleDeleteHabit={handleDeleteHabit}
+            setShowWeeklyReport={setShowWeeklyReport}
+            fetchWithAuth={fetchWithAuth}
+          />
         )}
 
-        {/* TAB 2: ANALYTICS */}
         {activeTab === 'analytics' && stats && (
-          <div className="tab-stack">
-            <div className="dashboard-title">
-              <h1>Аналітика Продуктивності</h1>
-              <p>Детальний розподіл ваших звичок та зусиль на основі даних API.</p>
-            </div>
-
-            <div className="dashboard-grid">
-
-              {/* Time series from chart_data */}
-              <div className="card chart-card-wide">
-                <h3 className="card-title">Динаміка виконань (14 днів)</h3>
-                <div className="chart-svg-container">
-                  <svg width="100%" height="100%" viewBox="0 0 420 180" preserveAspectRatio="xMidYMid meet">
-                    {(() => {
-                      const series = stats.chart_data.completion_time_series;
-                      const maxCount = Math.max(...series.map((p) => p.count), 1);
-                      const padL = 36;
-                      const padR = 16;
-                      const padT = 20;
-                      const padB = 36;
-                      const w = 420 - padL - padR;
-                      const h = 180 - padT - padB;
-                      const points = series.map((p, i) => {
-                        const x = padL + (series.length <= 1 ? w / 2 : (i / (series.length - 1)) * w);
-                        const y = padT + h - (p.count / maxCount) * h;
-                        return `${x},${y}`;
-                      }).join(" ");
-                      return (
-                        <>
-                          <line x1={padL} y1={padT + h} x2={420 - padR} y2={padT + h} stroke="var(--text-muted)" strokeWidth="1.5" />
-                          {[0, 0.5, 1].map((frac) => (
-                            <line
-                              key={frac}
-                              x1={padL}
-                              y1={padT + h * (1 - frac)}
-                              x2={420 - padR}
-                              y2={padT + h * (1 - frac)}
-                              stroke="var(--border-light)"
-                              strokeWidth="1"
-                              strokeDasharray="4"
-                            />
-                          ))}
-                          {series.length > 0 && (
-                            <>
-                              <polyline points={points} fill="none" stroke="var(--accent-primary)" strokeWidth="2.5" strokeLinejoin="round" />
-                              {series.map((p, i) => {
-                                const x = padL + (series.length <= 1 ? w / 2 : (i / (series.length - 1)) * w);
-                                const y = padT + h - (p.count / maxCount) * h;
-                                return (
-                                  <g key={p.date}>
-                                    <circle cx={x} cy={y} r="4" fill="var(--accent-primary)" />
-                                    {(i === 0 || i === series.length - 1 || i === Math.floor(series.length / 2)) && (
-                                      <text x={x} y={padT + h + 16} textAnchor="middle" fontSize="9" fill="var(--text-muted)">
-                                        {p.date.slice(5)}
-                                      </text>
-                                    )}
-                                  </g>
-                                );
-                              })}
-                            </>
-                          )}
-                        </>
-                      );
-                    })()}
-                  </svg>
-                </div>
-              </div>
-
-              {/* Weekly comparison */}
-              <div className="card">
-                <h3 className="card-title">Порівняння тижнів</h3>
-                <div className="chart-svg-container">
-                  <svg width="100%" height="100%" viewBox="0 0 300 150">
-                    <line x1="30" y1="120" x2="280" y2="120" stroke="var(--text-muted)" strokeWidth="1.5" />
-                    {stats.chart_data.weekly_comparison.map((w, i) => {
-                      const maxVal = Math.max(...stats.chart_data.weekly_comparison.map((x) => x.completions), 1);
-                      const barH = Math.min(90, (w.completions / maxVal) * 90);
-                      const x = 80 + i * 100;
-                      return (
-                        <g key={w.week}>
-                          <rect x={x} y={120 - barH} width="50" height={barH} className="chart-svg-bar" style={{ fill: i === 1 ? 'var(--accent-primary)' : '#64748b' }} />
-                          <text x={x + 25} y="135" textAnchor="middle" fontSize="9" fill="var(--text-muted)">{w.week.split('-W')[1] ?? w.week}</text>
-                          <text x={x + 25} y={110 - barH} textAnchor="middle" fontSize="11" fontWeight="700" fill="var(--text-heading)">{w.completions}</text>
-                        </g>
-                      );
-                    })}
-                  </svg>
-                </div>
-                <p className="chart-caption">Минулий vs поточний тиждень (ISO)</p>
-              </div>
-
-              {/* Category XP bar chart from chart_data */}
-              <div className="card">
-                <h3 className="card-title">XP за категоріями</h3>
-                <div className="chart-svg-container">
-                  <svg width="100%" height="100%" viewBox="0 0 300 180">
-                    <line x1="30" y1="150" x2="280" y2="150" stroke="var(--text-muted)" strokeWidth="1.5" />
-                    {(() => {
-                      const bars = stats.chart_data.category_bar.length
-                        ? stats.chart_data.category_bar
-                        : Object.entries(stats.category_stats).map(([category, xp]) => ({ category, xp }));
-                      const maxXp = Math.max(...bars.map((b) => b.xp), 1);
-                      const slot = 240 / Math.max(bars.length, 1);
-                      return bars.map((b, i) => {
-                        const barH = Math.min(110, (b.xp / maxXp) * 110);
-                        const x = 40 + i * slot;
-                        return (
-                          <g key={b.category}>
-                            <rect x={x} y={150 - barH} width={Math.min(40, slot - 10)} height={barH} className="chart-svg-bar" style={{ fill: 'var(--accent-primary)' }} />
-                            <text x={x + 20} y="165" textAnchor="middle" fontSize="8" fill="var(--text-muted)">{b.category.slice(0, 4)}</text>
-                            <text x={x + 20} y={140 - barH} textAnchor="middle" fontSize="10" fontWeight="700" fill="var(--text-heading)">{b.xp}</text>
-                          </g>
-                        );
-                      });
-                    })()}
-                  </svg>
-                </div>
-              </div>
-
-              {/* Category breakdown list */}
-              <div className="card">
-                <h3 className="card-title">Розподіл XP за категоріями</h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginTop: '10px' }}>
-                  {Object.entries(stats.category_stats).map(([cat, xp]) => {
-                    const maxXP = Math.max(...Object.values(stats.category_stats), 1);
-                    const pct = Math.round((xp / maxXP) * 100);
-                    return (
-                      <div key={cat} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px' }}>
-                          <span style={{ fontWeight: 600 }}>{categoryLabel(cat)}</span>
-                          <span style={{ color: 'var(--text-muted)' }}>{xp} XP</span>
-                        </div>
-                        <div className="xp-progress-container" style={{ height: '8px' }}>
-                          <div
-                            className="xp-progress-fill"
-                            style={{
-                              width: `${pct}%`,
-                              background: cat === 'study' ? '#3b82f6' :
-                                          cat === 'sport' ? '#f97316' :
-                                          cat === 'sleep' ? '#6366f1' :
-                                          cat === 'nutrition' ? '#14b8a6' : '#8b5cf6'
-                            }}
-                          ></div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-            </div>
-          </div>
+          <AnalyticsTab stats={stats} />
         )}
 
-        {/* TAB 3: ABOUT / GUIDE */}
         {activeTab === 'about' && (
           <div className="card" style={{ textAlign: 'left', lineHeight: 1.6 }}>
             <h2 style={{ marginBottom: '15px', color: 'var(--text-heading)' }}>Про HabitForge</h2>
@@ -1541,206 +605,22 @@ export default function App() {
 
       </main>
 
-      {/* MODAL 1: Create / Edit Habit */}
-      {showHabitModal && (
-        <div className="modal-backdrop" onClick={() => setShowHabitModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h2 style={{ marginBottom: '20px', color: 'var(--text-heading)' }}>
-              {editingHabit ? "Редагувати звичку" : "Створити нову звичку"}
-            </h2>
+      {/* Habit Creation/Editing Modal */}
+      <HabitModal
+        show={showHabitModal}
+        editingHabit={editingHabit}
+        habitForm={habitForm}
+        setHabitForm={setHabitForm}
+        onSubmit={handleHabitSubmit}
+        onClose={() => setShowHabitModal(false)}
+      />
 
-            <form onSubmit={handleHabitSubmit}>
-              <div className="form-group">
-                <label className="form-label">Назва звички</label>
-                <input 
-                  type="text" 
-                  className="form-input"
-                  required
-                  placeholder="напр., Ранкова пробіжка"
-                  value={habitForm.title}
-                  onChange={(e) => setHabitForm({ ...habitForm, title: e.target.value })}
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Опис (опціонально)</label>
-                <textarea 
-                  className="form-input"
-                  style={{ minHeight: '80px', resize: 'vertical' }}
-                  placeholder="напр., Пробігти 5 кілометрів"
-                  value={habitForm.description}
-                  onChange={(e) => setHabitForm({ ...habitForm, description: e.target.value })}
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Періодичність</label>
-                <select 
-                  className="form-input form-select"
-                  value={habitForm.frequency}
-                  onChange={(e) => setHabitForm({ ...habitForm, frequency: e.target.value as 'daily' | 'weekly' })}
-                >
-                  <option value="daily">Щодня</option>
-                  <option value="weekly">Щотижня</option>
-                </select>
-              </div>
-
-              <div className="form-group" style={{ marginBottom: '30px' }}>
-                <label className="form-label">Категорія (Режим)</label>
-                <select 
-                  className="form-input form-select"
-                  value={habitForm.category}
-                  onChange={(e) => setHabitForm({ ...habitForm, category: e.target.value as any })}
-                >
-                  <option value="study">📚 Навчання (Study)</option>
-                  <option value="sport">🏃 Спорт (Sport)</option>
-                  <option value="sleep">😴 Сон (Sleep)</option>
-                  <option value="nutrition">🍎 Харчування (Nutrition)</option>
-                  <option value="other">🧩 Інше (Other)</option>
-                </select>
-              </div>
-
-              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                <button type="button" className="secondary-btn" onClick={() => setShowHabitModal(false)}>
-                  Скасувати
-                </button>
-                <button type="submit" className="primary-btn">
-                  Зберегти
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL 2: Weekly Report Summary */}
-      {showWeeklyReport && stats && (
-        <div className="modal-backdrop" onClick={() => setShowWeeklyReport(false)}>
-          <div className="modal-content modal-content-wide" onClick={(e) => e.stopPropagation()}>
-            <h2 style={{ marginBottom: '20px', color: 'var(--text-heading)', textAlign: 'center' }}>
-              📊 Щотижневий звіт продуктивності
-            </h2>
-
-            <div className="weekly-report-body">
-              <div className="weekly-stats-grid">
-                <div className="weekly-stat-box">
-                  <span className="weekly-stat-value">{stats.weekly_report.habit_counts.total}</span>
-                  <span className="weekly-stat-label">Звичок</span>
-                </div>
-                <div className="weekly-stat-box">
-                  <span className="weekly-stat-value">{stats.weekly_report.habit_counts.daily}</span>
-                  <span className="weekly-stat-label">Щоденних</span>
-                </div>
-                <div className="weekly-stat-box">
-                  <span className="weekly-stat-value">{stats.weekly_report.habit_counts.weekly}</span>
-                  <span className="weekly-stat-label">Щотижневих</span>
-                </div>
-                <div className="weekly-stat-box">
-                  <span className="weekly-stat-value">{stats.weekly_report.average_streak}</span>
-                  <span className="weekly-stat-label">Сер. streak</span>
-                </div>
-                <div className="weekly-stat-box">
-                  <span className="weekly-stat-value">{stats.weekly_report.longest_streak}</span>
-                  <span className="weekly-stat-label">Max streak</span>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'space-around', textAlign: 'center' }}>
-                <div>
-                  <span style={{ fontSize: '28px', fontWeight: 800, color: 'var(--text-heading)' }}>
-                    {stats.weekly_report.this_week_completions}
-                  </span>
-                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>Цей тиждень</p>
-                </div>
-                <div>
-                  <span style={{ fontSize: '28px', fontWeight: 800, color: 'var(--text-muted)' }}>
-                    {stats.weekly_report.last_week_completions}
-                  </span>
-                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>Минулий тиждень</p>
-                </div>
-              </div>
-
-              <div>
-                <h4 className="weekly-section-title">Виконання по днях тижня</h4>
-                <div className="weekday-bars">
-                  {WEEKDAY_ORDER.map((day) => {
-                    const count = stats.weekly_report.completions_by_day[day] ?? 0;
-                    const maxDay = Math.max(
-                      ...WEEKDAY_ORDER.map((d) => stats.weekly_report.completions_by_day[d] ?? 0),
-                      1
-                    );
-                    return (
-                      <div key={day} className="weekday-bar-col">
-                        <div
-                          className="weekday-bar-fill"
-                          style={{ height: `${Math.max(8, (count / maxDay) * 72)}px` }}
-                          title={`${WEEKDAY_UA[day]}: ${count}`}
-                        />
-                        <span className="weekday-bar-label">{WEEKDAY_UA[day]}</span>
-                        <span className="weekday-bar-count">{count}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {stats.weekly_report.upcoming_due_dates.length > 0 && (
-                <div>
-                  <h4 className="weekly-section-title">Найближчі дедлайни</h4>
-                  <ul className="upcoming-due-list">
-                    {stats.weekly_report.upcoming_due_dates.map((item) => (
-                      <li key={`${item.habit_id}-${item.due_date}`}>
-                        <span className="due-title">{item.title}</span>
-                        <span className="due-meta">
-                          {item.frequency === "daily" ? "Щодня" : "Щотижня"} · до {item.due_date}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              <div style={{ display: 'flex', justifyContent: 'center' }}>
-                <div>
-                  <span style={{ fontSize: '28px', fontWeight: 800, color: 'var(--text-heading)' }}>
-                    {stats.weekly_report.this_week_completions}
-                  </span>
-                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>Цей тиждень</p>
-                </div>
-                <div>
-                  <span style={{ fontSize: '28px', fontWeight: 800, color: 'var(--text-muted)' }}>
-                    {stats.weekly_report.last_week_completions}
-                  </span>
-                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>Минулий тиждень</p>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'center' }}>
-                <div className={`growth-indicator ${
-                  stats.weekly_report.growth_rate > 0 ? 'growth-up' : 
-                  stats.weekly_report.growth_rate < 0 ? 'growth-down' : 'growth-stable'
-                }`}>
-                  {stats.weekly_report.growth_rate > 0 ? "📈" : stats.weekly_report.growth_rate < 0 ? "📉" : "➡️"} 
-                  {stats.weekly_report.growth_rate > 0 ? `+${stats.weekly_report.growth_rate}%` : `${stats.weekly_report.growth_rate}%`}
-                </div>
-              </div>
-
-              <div className="report-recommendation">
-                {stats.weekly_report.message}
-              </div>
-
-              <button 
-                className="primary-btn" 
-                style={{ width: '100%', justifyContent: 'center', marginTop: '10px' }} 
-                onClick={() => setShowWeeklyReport(false)}
-              >
-                Зрозуміло
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
+      {/* Weekly Report Modal */}
+      <WeeklyReportModal
+        show={showWeeklyReport}
+        stats={stats}
+        onClose={() => setShowWeeklyReport(false)}
+      />
     </div>
   );
 }

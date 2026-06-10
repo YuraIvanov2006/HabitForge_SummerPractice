@@ -110,3 +110,29 @@ class StatsResponse(BaseModel):
     chart_data: ChartData = Field(
         ..., description="Structured data for frontend charts and visualizations"
     )
+
+
+class MonthLabel(BaseModel):
+    label: str
+    column: int
+
+
+class HeatmapCellResponse(BaseModel):
+    date: str | None = Field(None, description="ISO date (YYYY-MM-DD)")
+    intensity: int = Field(..., description="Intensity value (0 to 4)")
+    completions: int = Field(..., description="Completions count")
+    variant: str = Field(..., description="active | padding | future")
+
+
+class HeatmapResponse(BaseModel):
+    cells: list[HeatmapCellResponse] = Field(default_factory=list)
+    week_count: int = Field(..., alias="weekCount")
+    month_labels: list[MonthLabel] = Field(default_factory=list, alias="monthLabels")
+    start_date: str = Field(..., alias="startDate")
+    end_date: str = Field(..., alias="endDate")
+    total_completions: int = Field(..., alias="totalCompletions")
+    active_days: int = Field(..., alias="activeDays")
+
+    class Config:
+        populate_by_name = True
+
