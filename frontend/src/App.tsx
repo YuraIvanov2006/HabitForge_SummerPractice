@@ -1,15 +1,20 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, lazy, Suspense } from 'react';
 import './App.css';
 
-// Component imports
+// Component imports — eagerly loaded (small, always needed)
 import AuthScreen from './components/AuthScreen';
 import DashboardTab from './components/DashboardTab';
-import AnalyticsTab from './components/AnalyticsTab';
-import WeeklyReportModal from './components/WeeklyReportModal';
 import HabitModal from './components/HabitModal';
+import ProfileSettingsModal from './components/ProfileSettingsModal';
+import { DashboardSkeleton } from './components/Skeleton';
 
-// ── Configuration & Types ──────────────────────────────────────────────────
-const API_BASE = "http://127.0.0.1:8000";
+// Lazy-loaded components — loaded only when needed (reduces initial bundle)
+const AnalyticsTab = lazy(() => import('./components/AnalyticsTab'));
+const WeeklyReportModal = lazy(() => import('./components/WeeklyReportModal'));
+
+// ── Configuration ──────────────────────────────────────────────────────────
+// Use environment variable from .env.local; fallback for direct development
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000';
 
 interface User {
   id: number;
@@ -85,14 +90,14 @@ interface FloatingXP {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-function formatLocalDate(d: Date): string {
+export function formatLocalDate(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
 
-function parseApiError(detail: unknown): string {
+export function parseApiError(detail: unknown): string {
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) {
     const fieldLabels: Record<string, string> = {
@@ -137,11 +142,19 @@ const TrophyIcon = () => (
   </svg>
 );
 
+const SettingsIcon = () => (
+  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+  </svg>
+);
+
 export default function App() {
   // Auth state
   const [token, setToken] = useState<string | null>(localStorage.getItem('access_token'));
   const [user, setUser] = useState<User | null>(null);
-  
+  const [isLoadingData, setIsLoadingData] = useState(false);
+
   // App state
   const [habits, setHabits] = useState<Habit[]>([]);
   const [habitLogs, setHabitLogs] = useState<Record<number, HabitLog[]>>({});
@@ -149,23 +162,24 @@ export default function App() {
   const [effectiveDate, setEffectiveDate] = useState<string>(() => formatLocalDate(new Date()));
   const [dateOverridden, setDateOverridden] = useState(false);
   const [devDateInput, setDevDateInput] = useState("");
-  
+
   // Navigation & Filtering
   const [activeTab, setActiveTab] = useState<'dashboard' | 'analytics' | 'about'>('dashboard');
   const [focusMode, setFocusMode] = useState<"all" | "study" | "sport" | "sleep" | "nutrition">("all");
-  
+
   // Modals & UI Toggles
   const [showHabitModal, setShowHabitModal] = useState(false);
   const [editingHabit, setEditingHabit] = useState<Habit | null>(null);
   const [showWeeklyReport, setShowWeeklyReport] = useState(false);
-  
+  const [showProfileSettings, setShowProfileSettings] = useState(false);
+
   const [habitForm, setHabitForm] = useState({
     title: '',
     description: '',
     frequency: 'daily' as 'daily' | 'weekly',
     category: 'study' as 'study' | 'sport' | 'sleep' | 'nutrition' | 'other'
   });
-  
+
   // Feedback Animations
   const [floats, setFloats] = useState<FloatingXP[]>([]);
   const [toasts, setToasts] = useState<{ id: number; message: string; type: string }[]>([]);
@@ -175,24 +189,101 @@ export default function App() {
     document.body.setAttribute('data-mode', focusMode);
   }, [focusMode]);
 
-  // ── API Fetchers ────────────────────────────────────────────────────────────
-  const fetchWithAuth = useCallback(async (endpoint: string, options: RequestInit = {}) => {
-    if (!token) return null;
-    const headers = {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`,
-      ...options.headers,
+  // ── Offline Detection ────────────────────────────────────────────────────────
+  useEffect(() => {
+    const handleOffline = () => triggerToast('Відсутнє підключення до мережі 🌐', 'error');
+    const handleOnline = () => triggerToast('З\'єднання відновлено ✅', 'success');
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
+    return () => {
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
     };
-    const response = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
-    if (response.status === 401) {
-      localStorage.removeItem('access_token');
-      setToken(null);
-      setUser(null);
-      triggerToast("Сесія завершилась. Будь ласка, авторизуйтесь знову.", "error");
+  }, []);
+
+  // ── API Fetchers ────────────────────────────────────────────────────────────
+  // isRefreshing prevents concurrent refresh attempts
+  let isRefreshing = false;
+
+  const fetchWithAuth = useCallback(async (endpoint: string, options: RequestInit = {}): Promise<Response | null> => {
+    if (!token) return null;
+
+    const makeRequest = (accessToken: string): Promise<Response> => {
+      const headers = {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${accessToken}`,
+        ...options.headers,
+      };
+      return fetch(`${API_BASE}${endpoint}`, { ...options, headers });
+    };
+
+    try {
+      let response = await makeRequest(token);
+
+      // ── Auto-refresh on 401 ──────────────────────────────────────────────
+      if (response.status === 401 && !isRefreshing) {
+        isRefreshing = true;
+        const storedRefresh = localStorage.getItem('refresh_token');
+
+        if (storedRefresh) {
+          try {
+            const refreshRes = await fetch(`${API_BASE}/api/auth/refresh`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ refresh_token: storedRefresh }),
+            });
+
+            if (refreshRes.ok) {
+              const data = await refreshRes.json();
+              localStorage.setItem('access_token', data.access_token);
+              localStorage.setItem('refresh_token', data.refresh_token);
+              setToken(data.access_token);
+
+              // Retry the original request with the new token
+              isRefreshing = false;
+              response = await makeRequest(data.access_token);
+            } else {
+              // Refresh token is also invalid — force logout
+              isRefreshing = false;
+              _performLogout();
+              triggerToast("Сесія завершилась. Будь ласка, авторизуйтесь знову.", "error");
+              return null;
+            }
+          } catch {
+            isRefreshing = false;
+            triggerToast("Помилка мережі при оновленні сесії.", "error");
+            return null;
+          }
+        } else {
+          // No refresh token stored — logout
+          _performLogout();
+          triggerToast("Сесія завершилась. Будь ласка, авторизуйтесь знову.", "error");
+          return null;
+        }
+      }
+
+      return response;
+    } catch (err) {
+      if (err instanceof TypeError) {
+        // Network failure (server unreachable, CORS, etc.)
+        triggerToast("Сервер недоступний. Перевірте підключення.", "error");
+      }
       return null;
     }
-    return response;
   }, [token]);
+
+  // Internal logout without toast (used by auto-refresh failure)
+  const _performLogout = useCallback(() => {
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
+    setToken(null);
+    setUser(null);
+    setHabits([]);
+    setHabitLogs({});
+    setStats(null);
+    setDateOverridden(false);
+    setEffectiveDate(formatLocalDate(new Date()));
+  }, []);
 
   const fetchEffectiveDate = useCallback(async () => {
     try {
@@ -222,12 +313,13 @@ export default function App() {
 
   const loadData = useCallback(async () => {
     if (!token) return;
+    setIsLoadingData(true);
     try {
       const resHabits = await fetchWithAuth("/api/habits/");
       if (resHabits && resHabits.ok) {
         const hList: Habit[] = await resHabits.json();
         setHabits(hList);
-        
+
         const logMap: Record<number, HabitLog[]> = {};
         await Promise.all(
           hList.map(async (habit) => {
@@ -251,6 +343,8 @@ export default function App() {
       }
     } catch (err) {
       console.error("Error loading tracker data:", err);
+    } finally {
+      setIsLoadingData(false);
     }
   }, [token, fetchWithAuth, stats]);
 
@@ -263,21 +357,23 @@ export default function App() {
   }, [token]);
 
   // ── Authentication Handlers ─────────────────────────────────────────────────
-  const handleLoginSuccess = (newToken: string) => {
+  const handleLoginSuccess = (newToken: string, newRefreshToken?: string) => {
     localStorage.setItem('access_token', newToken);
+    if (newRefreshToken) {
+      localStorage.setItem('refresh_token', newRefreshToken);
+    }
     setToken(newToken);
     triggerToast("Вхід виконано! Ласкаво просимо в HabitForge.", "success");
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('access_token');
-    setToken(null);
-    setUser(null);
-    setHabits([]);
-    setHabitLogs({});
-    setStats(null);
-    setDateOverridden(false);
-    setEffectiveDate(formatLocalDate(new Date()));
+  const handleLogout = async () => {
+    // Notify server (stateless — just confirmation; tokens are discarded client-side)
+    try {
+      await fetch(`${API_BASE}/api/auth/logout`, { method: 'POST' });
+    } catch {
+      // Ignore network errors on logout — client cleanup happens regardless
+    }
+    _performLogout();
     triggerToast("Ви вийшли з акаунта.", "info");
   };
 
@@ -356,7 +452,7 @@ export default function App() {
             return { ...prev, [habit.id]: [...list, updatedLog] };
           }
         });
-        
+
         const resStats = await fetchWithAuth("/api/stats/");
         if (resStats && resStats.ok) {
           const s = await resStats.json();
@@ -367,6 +463,7 @@ export default function App() {
       }
     } catch (err) {
       console.error("Error toggling completion log:", err);
+      triggerToast("Не вдалося оновити статус звички.", "error");
     }
   };
 
@@ -421,6 +518,7 @@ export default function App() {
       loadData();
     } catch (err) {
       console.error("Error submitting habit form:", err);
+      triggerToast("Не вдалося зберегти звичку.", "error");
     }
   };
 
@@ -437,6 +535,7 @@ export default function App() {
       }
     } catch (err) {
       console.error("Error deleting habit:", err);
+      triggerToast("Не вдалося видалити звичку.", "error");
     }
   };
 
@@ -449,6 +548,27 @@ export default function App() {
   const isHabitCompletedToday = (habitId: number) => {
     const logs = habitLogs[habitId] || [];
     return logs.some((l) => l.execution_date === effectiveDate && l.is_completed);
+  };
+
+  // ── Toast color mapping ──────────────────────────────────────────────────────
+  const getToastStyle = (type: string) => {
+    const colors: Record<string, string> = {
+      error: '#ef4444',
+      success: 'var(--accent-primary)',
+      info: '#3b82f6',
+      warning: '#f59e0b',
+    };
+    return colors[type] ?? 'var(--accent-primary)';
+  };
+
+  const getToastIcon = (type: string) => {
+    const icons: Record<string, string> = {
+      error: '❌',
+      success: '🌱',
+      info: 'ℹ️',
+      warning: '⚠️',
+    };
+    return icons[type] ?? '🌱';
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -477,8 +597,8 @@ export default function App() {
       {/* Global Toast Container */}
       <div className="toast-container">
         {toasts.map((t) => (
-          <div key={t.id} className="toast" style={{ borderLeftColor: t.type === 'error' ? '#ef4444' : 'var(--accent-primary)' }}>
-            <div>{t.type === 'error' ? '❌' : '🌱'}</div>
+          <div key={t.id} className="toast" style={{ borderLeftColor: getToastStyle(t.type) }}>
+            <div>{getToastIcon(t.type)}</div>
             <div>{t.message}</div>
           </div>
         ))}
@@ -492,21 +612,21 @@ export default function App() {
         </div>
 
         <nav className="nav-links">
-          <button 
+          <button
             className={`nav-item ${activeTab === 'dashboard' ? 'active' : ''}`}
             onClick={() => setActiveTab('dashboard')}
           >
             <HomeIcon />
             Дашборд
           </button>
-          <button 
+          <button
             className={`nav-item ${activeTab === 'analytics' ? 'active' : ''}`}
             onClick={() => setActiveTab('analytics')}
           >
             <ChartIcon />
             Аналітика
           </button>
-          <button 
+          <button
             className={`nav-item ${activeTab === 'about' ? 'active' : ''}`}
             onClick={() => setActiveTab('about')}
           >
@@ -522,6 +642,16 @@ export default function App() {
             </div>
             <div className="user-info">
               <span className="username">{user.username}</span>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <button
+                  onClick={() => setShowProfileSettings(true)}
+                  className="logout-btn"
+                  style={{ color: 'var(--text-muted)' }}
+                  title="Налаштування профілю"
+                >
+                  <SettingsIcon /> Налаштування
+                </button>
+              </div>
               <button onClick={handleLogout} className="logout-btn">Вийти</button>
             </div>
           </div>
@@ -530,27 +660,39 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="main-content">
-        
+
         {activeTab === 'dashboard' && (
-          <DashboardTab
-            stats={stats}
-            dateOverridden={dateOverridden}
-            effectiveDate={effectiveDate}
-            focusMode={focusMode}
-            setFocusMode={setFocusMode}
-            filteredHabits={filteredHabits}
-            isHabitCompletedToday={isHabitCompletedToday}
-            toggleHabitCompletion={toggleHabitCompletion}
-            openCreateModal={openCreateModal}
-            openEditModal={openEditModal}
-            handleDeleteHabit={handleDeleteHabit}
-            setShowWeeklyReport={setShowWeeklyReport}
-            fetchWithAuth={fetchWithAuth}
-          />
+          <>
+            {isLoadingData && !stats ? (
+              <DashboardSkeleton />
+            ) : (
+              <DashboardTab
+                stats={stats}
+                dateOverridden={dateOverridden}
+                effectiveDate={effectiveDate}
+                focusMode={focusMode}
+                setFocusMode={setFocusMode}
+                filteredHabits={filteredHabits}
+                isHabitCompletedToday={isHabitCompletedToday}
+                toggleHabitCompletion={toggleHabitCompletion}
+                openCreateModal={openCreateModal}
+                openEditModal={openEditModal}
+                handleDeleteHabit={handleDeleteHabit}
+                setShowWeeklyReport={setShowWeeklyReport}
+                fetchWithAuth={fetchWithAuth}
+              />
+            )}
+          </>
         )}
 
-        {activeTab === 'analytics' && stats && (
-          <AnalyticsTab stats={stats} />
+        {activeTab === 'analytics' && (
+          <Suspense fallback={<DashboardSkeleton />}>
+            {stats ? (
+              <AnalyticsTab stats={stats} />
+            ) : (
+              <DashboardSkeleton />
+            )}
+          </Suspense>
         )}
 
         {activeTab === 'about' && (
@@ -560,7 +702,7 @@ export default function App() {
               HabitForge — це інтерактивний інструмент, який поєднує гейміфікацію з поведінковою психологією.
               На відміну від звичайних трекерів, ваш успіх тут безпосередньо впливає на візуальну екосистему та ріст вашого персонального progress tree.
             </p>
-            
+
             <h3 style={{ margin: '20px 0 10px', color: 'var(--text-heading)' }}>Як нараховуються бали досвіду (XP)?</h3>
             <ul style={{ paddingLeft: '20px', marginBottom: '20px' }}>
               <li>Виконання <b>щоденної</b> звички приносить <b>+10 XP</b>.</li>
@@ -615,12 +757,27 @@ export default function App() {
         onClose={() => setShowHabitModal(false)}
       />
 
-      {/* Weekly Report Modal */}
-      <WeeklyReportModal
-        show={showWeeklyReport}
-        stats={stats}
-        onClose={() => setShowWeeklyReport(false)}
-      />
+      {/* Weekly Report Modal — lazy loaded */}
+      <Suspense fallback={null}>
+        <WeeklyReportModal
+          show={showWeeklyReport}
+          stats={stats}
+          onClose={() => setShowWeeklyReport(false)}
+        />
+      </Suspense>
+
+      {/* Profile Settings Modal */}
+      {user && (
+        <ProfileSettingsModal
+          show={showProfileSettings}
+          user={user}
+          onClose={() => setShowProfileSettings(false)}
+          onProfileUpdated={(updatedUser) => setUser(updatedUser)}
+          onAccountDeleted={_performLogout}
+          fetchWithAuth={fetchWithAuth}
+          triggerToast={triggerToast}
+        />
+      )}
     </div>
   );
 }

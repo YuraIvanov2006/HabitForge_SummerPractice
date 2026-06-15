@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+import EmptyState from './EmptyState';
 
 type HeatmapRange = "week" | "month" | "6months";
 
@@ -72,6 +73,15 @@ export default function Heatmap({
 
   if (!data) {
     return <div className="card heatmap-card"><p style={{ color: 'var(--text-muted)' }}>Завантаження теплової карти...</p></div>;
+  }
+
+  if (data.totalCompletions === 0) {
+    return (
+      <div className="card heatmap-card">
+        <h3 className="card-title" style={{ marginBottom: 16 }}>Теплова карта активності</h3>
+        <EmptyState type="no-data" />
+      </div>
+    );
   }
 
   return (

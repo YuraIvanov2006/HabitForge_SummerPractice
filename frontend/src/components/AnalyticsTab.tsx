@@ -1,6 +1,7 @@
-import React from 'react';
+import EmptyState from './EmptyState';
 
 interface Stats {
+  completions_count: number;
   category_stats: Record<string, number>;
   chart_data: {
     completion_time_series: { date: string; count: number }[];
@@ -22,6 +23,18 @@ function categoryLabel(cat: string): string {
 }
 
 export default function AnalyticsTab({ stats }: AnalyticsTabProps) {
+  if (stats.completions_count === 0) {
+    return (
+      <div className="tab-stack">
+        <div className="dashboard-title">
+          <h1>Аналітика Продуктивності</h1>
+          <p>Детальний розподіл ваших звичок та зусиль на основі даних API.</p>
+        </div>
+        <EmptyState type="no-analytics" />
+      </div>
+    );
+  }
+
   return (
     <div className="tab-stack">
       <div className="dashboard-title">
@@ -34,7 +47,8 @@ export default function AnalyticsTab({ stats }: AnalyticsTabProps) {
         {/* Time series from chart_data */}
         <div className="card chart-card-wide">
           <h3 className="card-title">Динаміка виконань (14 днів)</h3>
-          <div className="chart-svg-container">
+          <div className="chart-scroll-container">
+            <div className="chart-svg-container">
             <svg width="100%" height="100%" viewBox="0 0 420 180" preserveAspectRatio="xMidYMid meet">
               {(() => {
                 const series = stats.chart_data.completion_time_series;
@@ -88,6 +102,7 @@ export default function AnalyticsTab({ stats }: AnalyticsTabProps) {
                 );
               })()}
             </svg>
+          </div>
           </div>
         </div>
 

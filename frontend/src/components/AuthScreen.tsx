@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 
 interface AuthScreenProps {
   apiBase: string;
-  onLoginSuccess: (token: string) => void;
+  onLoginSuccess: (token: string, refreshToken?: string) => void;
   triggerToast: (message: string, type?: string) => void;
   parseApiError: (detail: unknown) => string;
 }
@@ -52,7 +52,7 @@ export default function AuthScreen({
           throw new Error(parseApiError(body.detail) || "Невірний email або пароль");
         }
         const data = await res.json();
-        onLoginSuccess(data.access_token);
+        onLoginSuccess(data.access_token, data.refresh_token);
       }
     } catch (err: any) {
       setAuthError(err.message || "Помилка сервера. Спробуйте пізніше.");

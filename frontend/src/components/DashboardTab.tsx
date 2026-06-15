@@ -1,6 +1,7 @@
 import React from 'react';
 import EcosystemTree from './EcosystemTree';
 import Heatmap from './Heatmap';
+import EmptyState from './EmptyState';
 
 interface Habit {
   id: number;
@@ -202,9 +203,7 @@ export default function DashboardTab({
             </div>
 
             {filteredHabits.length === 0 ? (
-              <div className="card" style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
-                📝 Не знайдено жодної звички у цій категорії. Натисніть кнопку вище, щоб створити її!
-              </div>
+              <EmptyState type="no-habits" onCTA={openCreateModal} />
             ) : (
               <div className="habits-grid">
                 {filteredHabits.map((habit) => {
