@@ -116,6 +116,9 @@ async def test_api_heatmap_endpoint(client: AsyncClient) -> None:
     """Test the GET /api/stats/heatmap API endpoint."""
     headers = await _get_auth_headers(client, "apiheatmap@example.com", "apiheatmap")
     
+    # Set virtual date to 2026-06-05
+    await client.post("/api/util/date", json={"date": "2026-06-05"})
+
     # Create a habit
     res = await client.post(
         "/api/habits/",

@@ -72,6 +72,33 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     app.dependency_overrides.clear()
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limits() -> None:
+    """
+    Reset slowapi in-memory rate limit storage before each test.
+
+    Without this, all tests share the same 127.0.0.1 IP in the ASGI test client.
+    Since the 10/minute limit for auth endpoints is shared across the in-memory
+    limiter storage, tests beyond the 10th call would receive HTTP 429 errors.
+
+    slowapi uses the `limits` library internally; clearing its storage ensures
+    each test function starts with a clean rate-limit counter.
+    """
+    from app.middleware.rate_limit import limiter
+
+    # The storage backend is accessible via limiter._limiter.storage
+    # Calling .reset() clears all stored counters.
+    try:
+        limiter._limiter.storage.reset()
+    except Exception:
+        pass  # If storage doesn't support reset, tests still run (just may rate-limit)
+    yield
+    try:
+        limiter._limiter.storage.reset()
+    except Exception:
+        pass
+
+
 @pytest.fixture(scope="session")
 def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
     """Create an instance of the default event loop for the session."""
