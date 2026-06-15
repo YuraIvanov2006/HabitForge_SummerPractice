@@ -9,11 +9,16 @@ All routers are registered here. This is the entry-point used by Uvicorn:
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.api import auth, habits, reports, stats, users, util
 from app.core.config import settings
+from app.middleware.rate_limit import limiter
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -41,15 +46,23 @@ def create_application() -> FastAPI:
             "Build the habit. Forge the future.\n\n"
             "### Authentication\n"
             "Use `POST /api/auth/register` to create an account, then "
-            "`POST /api/auth/login` to obtain a Bearer token. "
-            "Click the 🔓 **Authorize** button and paste your token."
+            "`POST /api/auth/login` to obtain a Bearer token pair (access + refresh). "
+            "Click the 🔓 **Authorize** button and paste your access token.\n\n"
+            "### Token Refresh\n"
+            "When the access token expires, use `POST /api/auth/refresh` with your "
+            "refresh token to obtain a new token pair without re-logging in."
         ),
-        version="1.0.0",
+        version="1.1.0",
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
         lifespan=lifespan,
     )
+
+    # ── Rate limiting ──────────────────────────────────────────────────────────
+    application.state.limiter = limiter
+    application.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    application.add_middleware(SlowAPIMiddleware)
 
     # ── CORS ──────────────────────────────────────────────────────────────────
     application.add_middleware(
